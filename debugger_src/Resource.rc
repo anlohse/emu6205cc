@@ -1,0 +1,33 @@
+#include "resource.h"
+#include <winresrc.h>
+/////////////////////////////////////////////////////////////////////////////
+//
+// Accelerator
+//
+
+IDR_ACCELERATOR1 ACCELERATORS
+BEGIN
+    VK_F8,          ID_BTN_RUN,             VIRTKEY, NOINVERT
+    VK_F6,          ID_BTN_STEP,            VIRTKEY, NOINVERT
+    VK_F7,          ID_BTN_PAUSE,           VIRTKEY, NOINVERT
+END
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Dialog
+//
+
+IDD_DLG_ADD_BRK DIALOGEX 0, 0, 169, 58
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Add Breakpoint"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    DEFPUSHBUTTON   "OK",IDOK,7,37,50,14
+    PUSHBUTTON      "Cancelar",IDCANCEL,111,37,50,14
+    EDITTEXT        IDC_EDIT1,7,16,156,14,ES_AUTOHSCROLL
+    LTEXT           "Address:",IDC_STATIC,7,7,30,8
+END
+
+
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "Application.manifest"

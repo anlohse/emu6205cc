@@ -1,0 +1,11 @@
+#define ID_BTN_RUN                      101
+#define IDR_ACCELERATOR1                201
+#define IDD_DLG_ADD_BRK                 102
+#define ID_BTN_STEP                     102
+#define ID_BTN_PAUSE                    103
+#define ID_BTN_ADDBRK					104
+#define ID_BTN_REMBRK					105
+#define ID_BRKS_VIEW					106
+#define ID_BTN_RESET                    107
+#define IDC_EDIT1                       1001
+#define IDC_STATIC                      1002
