@@ -6,20 +6,22 @@ and two debugger front-ends (Win32 GUI and ncurses TUI).
 
 ## Status
 
-The core executes all 151 documented 6502 opcodes. It **passes Klaus Dormann's
-`6502_functional_test`** — including decimal-mode `ADC`/`SBC` — once a single
-addressing-mode bug is corrected. See [docs/accuracy.md](docs/accuracy.md) for the
-conformance report, the exact bug, and the full list of known deviations.
+**Passes Klaus Dormann's `6502_functional_test`**, including decimal-mode `ADC`/`SBC`,
+after 30.6M instructions. The test is wired into the suite, so it gates every build.
 
 | Area | State |
 | --- | --- |
-| Documented opcodes | complete |
-| Flags, ALU, stack, BCD | correct (functional test) |
-| Addressing modes | correct except `(zp,X)` — see accuracy doc |
-| Cycle counts | base counts only; no page-cross or branch penalties |
-| Interrupts (IRQ/NMI) | **not implemented** (`BRK`/`RTI` exist) |
-| Undocumented opcodes | decode as 2-cycle `NOP` |
-| Bus / memory mapping | single flat 64 KB `Memory`; no address decoding |
+| Documented opcodes | all 151, verified by the functional test |
+| Undocumented opcodes | all 256 slots filled; six unstable ones approximated |
+| Flags, ALU, stack, BCD | correct |
+| Addressing modes | correct, including zero-page wrap and the `JMP ($xxFF)` bug |
+| Cycle counts | base, branch taken/page-cross, indexed page-cross |
+| Interrupts (IRQ/NMI) | implemented, with correct `B` and `I` semantics |
+| Timing granularity | instruction-stepped, not cycle-stepped |
+| Bus / memory mapping | single flat 64 KB `Memory`; `Bus` is virtual for decoding |
+
+See [docs/accuracy.md](docs/accuracy.md) for the conformance report and the remaining
+known deviations.
 
 ## Layout
 
@@ -39,42 +41,24 @@ cmake -S . -B build && cmake --build build --config Release
 
 Targets: `emu6502_lib` (shared library), `emu6502_debugger`, `emu6502_test`.
 
-### Windows caveats
-
-Two defects currently stop a clean MSVC build. Both are verified, and both have
-one-line fixes.
-
-**1. No exported symbols.** `emu6502_lib` is declared `SHARED` but nothing is annotated
-with `__declspec(dllexport)`, so MSVC produces no import library and both
-`emu6502_test` and `emu6502_debugger` fail with `LNK1104: cannot open
-'emu6502_lib.lib'`. Work around it at configure time:
+### Running the tests
 
 ```bash
-cmake -S . -B build -DCMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=ON
+ctest --test-dir build -C Release --output-on-failure
 ```
 
-The durable fix is `set_target_properties(emu6502_lib PROPERTIES
-WINDOWS_EXPORT_ALL_SYMBOLS ON)` in `CMakeLists.txt`, an export macro, or making the
-library `STATIC`.
+Or run the binary directly — `./build/Release/emu6502_test` on MSVC,
+`./build/emu6502_test` on single-config generators. It finds its data files through a
+compile definition, so any working directory works.
 
-**2. Duplicate manifest.** `debugger_src/Resource.rc:33` embeds `Application.manifest`
-as an `RT_MANIFEST` resource, and MSVC's linker generates one as well, so
-`emu6502_debugger` fails with `CVT1100: duplicate resource ... MANIFEST` followed by
-`LNK1123`. Suppress the generated one:
-
-```cmake
-if(MSVC)
-    target_link_options(emu6502_debugger PRIVATE /MANIFEST:NO)
-endif()
-```
-
-With both applied, all three targets build and the test suite passes.
-
-### Running
+The functional test dominates the runtime (about 30 seconds in a Release build, much
+longer in Debug). To skip it while iterating:
 
 ```bash
-./build/emu6502_test
+./build/Release/emu6502_test -tce=functional_test_suite
 ```
+
+### Running the debugger
 
 The debugger loads `test/6502_functional_test.bin` from the **current working
 directory**, so launch it from the repository root.
@@ -100,8 +84,21 @@ emu.start(true);             // reset, then run() on THIS thread until stopped
 ```
 
 `start(false)` resets and returns immediately, leaving you to drive `cpu.step()`.
-`Processor::step()` fetches one opcode, executes it, and charges its cycles to the
-clock — that is the hook you want for cycle-driven co-processors.
+`Processor::step()` executes one instruction (or services a pending interrupt) and
+charges its cycles to the clock — that is the hook you want for driving co-processors:
+
+```cpp
+uint64_t before = clock.cycles();
+cpu.step();
+ppu.tick(3 * (clock.cycles() - before));   // the NES runs 3 PPU dots per CPU cycle
+```
+
+Interrupts are asserted from outside, and both calls are thread-safe:
+
+```cpp
+cpu.nmi();          // edge-triggered, latches, ignores the I flag
+cpu.irq(true);      // level-triggered, held until the device releases it
+```
 
 Assembling and disassembling:
 
@@ -112,9 +109,10 @@ UnAsm un;
 std::string line = un.unasm_line(&bus, 0x0400);                 // "LDA $01"
 ```
 
-The assembler's operand syntax is **not** standard 6502 assembly — indexed-indirect is
-written `($nn),x`, hex operands must have exactly 2 or 4 digits, and labels are not
-supported. See [docs/assembler.md](docs/assembler.md) before writing any source for it.
+The assembler takes conventional operand syntax — `($nn,X)`, `($nn),Y`, `#$nn` — but
+hex operands must have exactly 2 or 4 digits, branch targets are signed decimal
+offsets, and labels are not supported. See [docs/assembler.md](docs/assembler.md)
+before writing source for it.
 
 ## Documentation
 

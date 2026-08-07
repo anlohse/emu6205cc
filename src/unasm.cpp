@@ -14,22 +14,47 @@ UnAsm::UnAsm() {
 UnAsm::~UnAsm() {
 }
 
+/*
+ * Mnemonics for all 256 opcodes, documented and undocumented alike. The
+ * processor executes every one of them, so the disassembler has to name every
+ * one of them -- otherwise a listing that walks through undocumented code
+ * cannot know the instruction length and loses sync with the instruction
+ * stream.
+ */
 static const char* _instruction_names[256] = {
-"BRK", "ORA", INVAL, INVAL, INVAL, "ORA", "ASL", INVAL, "PHP", "ORA", "ASL", INVAL, INVAL, "ORA", "ASL", INVAL, "BPL", "ORA", INVAL, INVAL, INVAL, "ORA", "ASL", INVAL, "CLC", "ORA", INVAL, INVAL, INVAL, "ORA", "ASL", INVAL,
-"JSR", "AND", INVAL, INVAL, "BIT", "AND", "ROL", INVAL, "PLP", "AND", "ROL", INVAL, "BIT", "AND", "ROL", INVAL, "BMI", "AND", INVAL, INVAL, INVAL, "AND", "ROL", INVAL, "SEC", "AND", INVAL, INVAL, INVAL, "AND", "ROL", INVAL,
-"RTI", "EOR", INVAL, INVAL, INVAL, "EOR", "LSR", INVAL, "PHA", "EOR", "LSR", INVAL, "JMP", "EOR", "LSR", INVAL, "BVC", "EOR", INVAL, INVAL, INVAL, "EOR", "LSR", INVAL, "CLI", "EOR", INVAL, INVAL, INVAL, "EOR", "LSR", INVAL,
-"RTS", "ADC", INVAL, INVAL, INVAL, "ADC", "ROR", INVAL, "PLA", "ADC", "ROR", INVAL, "JMP", "ADC", "ROR", INVAL, "BVS", "ADC", INVAL, INVAL, INVAL, "ADC", "ROR", INVAL, "SEI", "ADC", INVAL, INVAL, INVAL, "ADC", "ROR", INVAL,
-INVAL, "STA", INVAL, INVAL, "STY", "STA", "STX", INVAL, "DEY", INVAL, "TXA", INVAL, "STY", "STA", "STX", INVAL, "BCC", "STA", INVAL, INVAL, "STY", "STA", "STX", INVAL, "TYA", "STA", "TXS", INVAL, INVAL, "STA", INVAL, INVAL,
-"LDY", "LDA", "LDX", INVAL, "LDY", "LDA", "LDX", INVAL, "TAY", "LDA", "TAX", INVAL, "LDY", "LDA", "LDX", INVAL, "BCS", "LDA", INVAL, INVAL, "LDY", "LDA", "LDX", INVAL, "CLV", "LDA", "TSX", INVAL, "LDY", "LDA", "LDX", INVAL,
-"CPY", "CMP", INVAL, INVAL, "CPY", "CMP", "DEC", INVAL, "INY", "CMP", "DEX", INVAL, "CPY", "CMP", "DEC", INVAL, "BNE", "CMP", INVAL, INVAL, INVAL, "CMP", "DEC", INVAL, "CLD", "CMP", INVAL, INVAL, INVAL, "CMP", "DEC", INVAL,
-"CPX", "SBC", INVAL, INVAL, "CPX", "SBC", "INC", INVAL, "INX", "SBC", "NOP", INVAL, "CPX", "SBC", "INC", INVAL, "BEQ", "SBC", INVAL, INVAL, INVAL, "SBC", "INC", INVAL, "SED", "SBC", INVAL, INVAL, INVAL, "SBC", "INC", INVAL
+"BRK", "ORA", "KIL", "SLO", "NOP", "ORA", "ASL", "SLO", "PHP", "ORA", "ASL", "ANC", "NOP", "ORA", "ASL", "SLO",
+"BPL", "ORA", "KIL", "SLO", "NOP", "ORA", "ASL", "SLO", "CLC", "ORA", "NOP", "SLO", "NOP", "ORA", "ASL", "SLO",
+"JSR", "AND", "KIL", "RLA", "BIT", "AND", "ROL", "RLA", "PLP", "AND", "ROL", "ANC", "BIT", "AND", "ROL", "RLA",
+"BMI", "AND", "KIL", "RLA", "NOP", "AND", "ROL", "RLA", "SEC", "AND", "NOP", "RLA", "NOP", "AND", "ROL", "RLA",
+"RTI", "EOR", "KIL", "SRE", "NOP", "EOR", "LSR", "SRE", "PHA", "EOR", "LSR", "ALR", "JMP", "EOR", "LSR", "SRE",
+"BVC", "EOR", "KIL", "SRE", "NOP", "EOR", "LSR", "SRE", "CLI", "EOR", "NOP", "SRE", "NOP", "EOR", "LSR", "SRE",
+"RTS", "ADC", "KIL", "RRA", "NOP", "ADC", "ROR", "RRA", "PLA", "ADC", "ROR", "ARR", "JMP", "ADC", "ROR", "RRA",
+"BVS", "ADC", "KIL", "RRA", "NOP", "ADC", "ROR", "RRA", "SEI", "ADC", "NOP", "RRA", "NOP", "ADC", "ROR", "RRA",
+"NOP", "STA", "NOP", "SAX", "STY", "STA", "STX", "SAX", "DEY", "NOP", "TXA", "XAA", "STY", "STA", "STX", "SAX",
+"BCC", "STA", "KIL", "SHA", "STY", "STA", "STX", "SAX", "TYA", "STA", "TXS", "TAS", "SHY", "STA", "SHX", "SHA",
+"LDY", "LDA", "LDX", "LAX", "LDY", "LDA", "LDX", "LAX", "TAY", "LDA", "TAX", "LXA", "LDY", "LDA", "LDX", "LAX",
+"BCS", "LDA", "KIL", "LAX", "LDY", "LDA", "LDX", "LAX", "CLV", "LDA", "TSX", "LAS", "LDY", "LDA", "LDX", "LAX",
+"CPY", "CMP", "NOP", "DCP", "CPY", "CMP", "DEC", "DCP", "INY", "CMP", "DEX", "SBX", "CPY", "CMP", "DEC", "DCP",
+"BNE", "CMP", "KIL", "DCP", "NOP", "CMP", "DEC", "DCP", "CLD", "CMP", "NOP", "DCP", "NOP", "CMP", "DEC", "DCP",
+"CPX", "SBC", "NOP", "ISC", "CPX", "SBC", "INC", "ISC", "INX", "SBC", "NOP", "SBC", "CPX", "SBC", "INC", "ISC",
+"BEQ", "SBC", "KIL", "ISC", "NOP", "SBC", "INC", "ISC", "SED", "SBC", "NOP", "ISC", "NOP", "SBC", "INC", "ISC"
 };
 
-string getIndParams(Bus* _bus, uint16& at) {
+/** Indexed indirect, ($nn,X). */
+string getIndXParams(Bus* _bus, uint16& at) {
 	uint8 data = _bus->read(at);
 	at++;
 	stringstream res;
-	res << "($" << setfill('0') << setw(2) << right << hex << (int)data << ")";
+	res << "($" << setfill('0') << setw(2) << right << hex << (int)data << ",X)";
+	return res.str();
+}
+
+/** Indirect indexed, ($nn),Y. */
+string getIndYParams(Bus* _bus, uint16& at) {
+	uint8 data = _bus->read(at);
+	at++;
+	stringstream res;
+	res << "($" << setfill('0') << setw(2) << right << hex << (int)data << "),Y";
 	return res.str();
 }
 
@@ -116,7 +141,7 @@ string UnAsm::unasm_line(Bus* _bus, Registers* _regs) {
 	case 1:
 		switch(b) {
 		case 0:
-			return res + " " + getIndParams(_bus, _regs->pc) + ", X";
+			return res + " " + getIndXParams(_bus, _regs->pc);
 		case 1:
 			return res + " " + getZPgParams(_bus, _regs->pc);
 		case 2:
@@ -124,7 +149,7 @@ string UnAsm::unasm_line(Bus* _bus, Registers* _regs) {
 		case 3:
 			return res + " " + getAbsParams(_bus, _regs->pc);
 		case 4:
-			return res + " " + getIndParams(_bus, _regs->pc) + ", Y";
+			return res + " " + getIndYParams(_bus, _regs->pc);
 		case 5:
 			return res + " " + getZPgParams(_bus, _regs->pc) + ", X";
 		case 6:
@@ -136,6 +161,9 @@ string UnAsm::unasm_line(Bus* _bus, Registers* _regs) {
 	case 2:
 		switch(b) {
 		case 0:
+			// $02/$22/$42/$62 are KIL and take no operand; $82..$E2 are
+			// immediate (LDX #, and the undocumented NOP #).
+			if (a < 4) return res;
 			return res + " " + getImmParams(_bus, _regs->pc);
 		case 1:
 			return res + " " + getZPgParams(_bus, _regs->pc);
@@ -146,12 +174,37 @@ string UnAsm::unasm_line(Bus* _bus, Registers* _regs) {
 				return res;
 		case 3:
 			return res + " " + getAbsParams(_bus, _regs->pc);
+		case 4:
+			return res;  // KIL
 		case 5:
-			return res + " " + getZPgParams(_bus, _regs->pc) + ", X";
+			// STX/LDX and their undocumented neighbours index by Y here.
+			return res + " " + getZPgParams(_bus, _regs->pc) + ((a == 4 || a == 5) ? ",Y" : ",X");
 		case 6:
 			return res;
 		case 7:
-			return res + " " + getAbsParams(_bus, _regs->pc) + ", X";
+			return res + " " + getAbsParams(_bus, _regs->pc) + ((a == 4 || a == 5) ? ",Y" : ",X");
+		}
+		break;
+	case 3:
+		// The undocumented column. Addressing mirrors c == 1, except that the
+		// $9x and $Bx rows index by Y rather than X.
+		switch(b) {
+		case 0:
+			return res + " " + getIndXParams(_bus, _regs->pc);
+		case 1:
+			return res + " " + getZPgParams(_bus, _regs->pc);
+		case 2:
+			return res + " " + getImmParams(_bus, _regs->pc);
+		case 3:
+			return res + " " + getAbsParams(_bus, _regs->pc);
+		case 4:
+			return res + " " + getIndYParams(_bus, _regs->pc);
+		case 5:
+			return res + " " + getZPgParams(_bus, _regs->pc) + ((a == 4 || a == 5) ? ",Y" : ",X");
+		case 6:
+			return res + " " + getAbsParams(_bus, _regs->pc) + ",Y";
+		case 7:
+			return res + " " + getAbsParams(_bus, _regs->pc) + ((a == 4 || a == 5) ? ",Y" : ",X");
 		}
 		break;
 	}
@@ -159,7 +212,7 @@ string UnAsm::unasm_line(Bus* _bus, Registers* _regs) {
 }
 
 string UnAsm::unasm_line(Bus* _bus, uint16 at) {
-	Registers r;
+	Registers r = { };  // only pc is consulted, but leave nothing indeterminate
 	r.pc = at;
 	return unasm_line(_bus, &r);
 }

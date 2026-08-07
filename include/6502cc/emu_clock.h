@@ -64,7 +64,8 @@ public:
 class chrono_clock : public default_clock {
 private:
 	double m_cycle_time;
-	std::chrono::high_resolution_clock::time_point m_begin_time;
+	/** Absolute time the emulated CPU should have reached; advanced per call. */
+	std::chrono::steady_clock::time_point m_deadline;
 public:
 	/**
 	 * Initialize the clock with the speed in MHz
@@ -77,25 +78,23 @@ public:
 };
 
 /**
- * Intended as a tighter-pacing clock using the platform's high-resolution timer.
+ * Tighter pacing using the platform's high-resolution timer.
  *
- * @warning Miscalibrated on Windows. nanoTime() returns a raw
- * QueryPerformanceCounter value, which is in QueryPerformanceFrequency units
- * (10 MHz, i.e. 100 ns per tick, on typical hardware) rather than nanoseconds.
- * waitCycles() subtracts those ticks from a nanosecond budget, so elapsed time
- * is under-counted by ~100x and the clock over-sleeps. The Linux path uses
- * clock_gettime(CLOCK_MONOTONIC) and is genuinely nanoseconds.
+ * Sleeps for all but the last millisecond of a wait and spins out the
+ * remainder, which is accurate to well under a microsecond without burning a
+ * core on long waits. Uses QueryPerformanceCounter on Windows (converted from
+ * its own frequency units to nanoseconds) and clock_gettime(CLOCK_MONOTONIC)
+ * on Linux.
  *
- * @warning The tighter busy-wait loop is behind `#ifdef USE_PRECISION_CLOCK`,
- * which the build never defines — so it currently falls back to sleep_for and
- * behaves no better than chrono_clock.
- *
- * Prefer default_clock until this is fixed.
+ * @note Still called once per instruction, so it cannot make up for the fact
+ * that a 2-cycle instruction is 2 us. For steady throttling, prefer
+ * default_clock plus your own per-frame pacing.
  */
 class precision_clock : public default_clock {
 private:
 	double m_cycle_time;
-	unsigned long long m_begin_time;
+	/** Absolute nanosecond deadline the emulated CPU should have reached. */
+	unsigned long long m_deadline;
 public:
 	/**
 	 * Initialize the clock with the speed in MHz

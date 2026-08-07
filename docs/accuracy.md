@@ -7,169 +7,123 @@ with `disable_decimal = 0` (decimal mode **is** tested) and `report = 0` (failur
 on a self-branch). It loads flat at `$0000`, starts at `$0400`, and reaches
 `JMP $3469` — a self-jump immediately followed by `JMP $0400` — on success.
 
-Results, running the core headlessly and stopping when `PC` stops advancing:
+**It passes.** The run reaches `$3469` after 30,646,177 instructions. It is wired into
+the test suite as `functional_test_suite` (see `test_src/testFunctional.cpp`), so any
+regression in a documented opcode, addressing mode, flag or BCD operation fails the
+build.
 
-| Build | Result |
+```bash
+cmake --build build --config Release && ./build/Release/emu6502_test
+```
+
+Alongside it, `test_src/testCpu.cpp` pins down the cases the functional test does not
+reach: interrupts, page-crossing cycle counts, zero-page pointer wrapping, the
+`JMP ($xxFF)` quirk, memory bounds, clock pacing and every undocumented opcode.
+
+## What is modelled
+
+| Area | State |
 | --- | --- |
-| As committed | Traps at `$17AD`, after 44,327 instructions |
-| With `(zp,X)` corrected | **Passes** — reaches `$3469` after 30,646,177 instructions / 84,663,981 cycles |
+| Documented opcodes | all 151, verified by the functional test |
+| Undocumented opcodes | all 256 slots filled; see the caveats below |
+| Flags, ALU, stack, BCD | correct |
+| Addressing modes | correct, including zero-page pointer wrapping |
+| `JMP ($xxFF)` | reproduces the hardware page-boundary bug |
+| Cycle counts | base, branch taken/page-cross, and indexed page-cross penalties |
+| IRQ / NMI | implemented, with correct `B`-flag and `I`-gating semantics |
+| Reset | `SP=$FD`, `I` set, vector from `$FFFC`, 7 cycles |
 
-`$17AD` is the trap after this sequence:
+## Remaining deviations
 
-```
-17A5  81 30     STA ($30,X)
-17A7  08        PHP
-17A8  49 C3     EOR #$C3
-17AA  D9 17 02  CMP $0217,Y
-17AD  D0 FE     BNE *          ; trap
-```
+These are known and deliberate. None of them affect the functional test, and none block
+a scanline-accurate NES; they are listed so you know where the edges are.
 
-That is the indexed-indirect test. Correcting `IndirectXParams` alone is sufficient to
-pass the entire suite — the ALU, every flag, the stack, BCD `ADC`/`SBC`, and all other
-addressing modes are already right. **This core is one bug away from being functionally
-complete for documented opcodes.**
+### Instruction-stepped, not cycle-stepped
 
-## Defects
+`Processor::step()` executes a whole instruction and then charges its total cycle cost
+to the clock. Bus accesses within an instruction therefore all appear to happen at
+once. Consequences:
 
-### 1. `(zp,X)` indexed-indirect resolves the wrong pointer
+- Read-modify-write instructions (`INC`, `ASL abs,X`, and the undocumented RMW family)
+  do not perform the hardware's extra dummy write of the unmodified value. A few NES
+  titles use that write to acknowledge an interrupt register.
+- Indexed reads that cross a page do not perform the dummy read of the un-carried
+  address.
+- The cycle count is correct in total, but not in distribution.
 
-`src/parameters.h`, `IndirectXParams`. The hardware computes the pointer address as
-`(zp + X) & 0xFF` and reads the 16-bit target from there. The implementation instead
-reads the pointer from `zp` and adds `X` to the *resulting target address*:
+Fixing this does not require restructuring `Processor` — because every instruction
+funnels its memory access through `Bus`, making `Bus::read`/`write` tick a co-processor
+gives cycle-level timing directly. See [nes-roadmap.md](nes-roadmap.md).
 
-```cpp
-uint16 address = bus->read(data) | (bus->read(data+1) << 8);
-return bus->read(address + regs->x);          // wrong: X applied to the target
-```
+### Interrupts are polled at instruction boundaries
 
-That is `(zp),X` semantics, which is not a 6502 addressing mode. It affects all eight
-`$x1` opcodes with `X` indexing: `ORA` `AND` `EOR` `ADC` `STA` `LDA` `CMP` `SBC`.
+Real hardware samples the interrupt lines partway through an instruction, which
+produces two observable effects this core does not reproduce:
 
-Verified: `LDA ($20,X)` with `X=4`, pointer `$3000` at `$24`, decoy pointer `$4000` at
-`$20`, `$3000`=`$AA`, `$4004`=`$BB` — the core loads `$BB`.
+- **Delayed flag effect.** `CLI`, `SEI` and `PLP` change `I` one instruction later than
+  you would expect, so an IRQ can slip in immediately after `SEI`.
+- **BRK hijacking.** An NMI asserted during a `BRK` sequence takes over the vector
+  while keeping `BRK`'s pushed state.
 
-The correct form also wraps the high-byte fetch inside the zero page:
+Both are edge cases that essentially no software depends on.
 
-```cpp
-uint8 lo = data + regs->x;          // uint8 arithmetic wraps for free
-uint8 hi = data + regs->x + 1;
-uint16 address = bus->read(lo) | (bus->read(hi) << 8);
-```
+### Unstable undocumented opcodes are approximated
 
-### 2. `(zp),Y` does not wrap its pointer inside the zero page
+Most undocumented opcodes are stable across NMOS parts and are implemented exactly:
+`LAX`, `SAX`, `DCP`, `ISC`, `SLO`, `RLA`, `SRE`, `RRA`, `ANC`, `ALR`, `SBX`, `LAS`, the
+`SBC` alias at `$EB`, and every multi-byte `NOP`. `KIL`/`JAM` locks the processor by
+rewinding `PC` onto itself, which is what the hardware does.
 
-Same file, `IndirectYParams`. `data` is `uint8`, but `data+1` promotes to `int`, so
-`LDA ($FF),Y` reads its high byte from `$0100` instead of `$0000`. Verified: the core
-returns the wrong value. The same promotion bug is in `ZeroPageParams::get16bit` via
-the `READ16` macro.
+These depend on analog behaviour and use the conventional approximations instead:
 
-The functional test does not exercise this case, so it passes despite the bug.
-
-### 3. Branch instructions report the wrong cycle count
-
-`src/InstructionImpl.h`, the shared `branch()` helper. It returns only its local page-
-cross adjustment `xc` and **discards the `cycles` template argument entirely**. It also
-adds 2 for a page cross where the hardware adds 1.
-
-| Case | Hardware | This core |
+| Opcode | Instruction | Approximation |
 | --- | --- | --- |
-| Not taken | 2 | 0 |
-| Taken, same page | 3 | 0 |
-| Taken, crossing a page | 4 | 2 |
+| `$8B` | XAA / ANE | `A = (A \| $EE) & X & imm` — the magic constant varies by chip |
+| `$AB` | LXA | treated as `LAX #imm` |
+| `$93`, `$9F` | SHA | `store (A & X) & (addr_high + 1)` |
+| `$9B` | TAS | as SHA, and also loads `SP` |
+| `$9C` | SHY | `store Y & (addr_high + 1)` |
+| `$9E` | SHX | `store X & (addr_high + 1)` |
 
-All measured. Fixing it means returning `cycles + (taken ? 1 : 0) + (crossed ? 1 : 0)`
-and changing the page-cross adjustment from `+= 2` to `+= 1`. (The opcode table also
-lists `BEQ` as 3 cycles where every other branch is 2; once `branch()` uses the
-argument, that entry should become 2.)
+On hardware the `& (addr_high + 1)` is dropped when the index carries into a new page,
+and the result is not reliably reproducible. Do not write software that depends on
+these six.
 
-### 4. No page-crossing cycle penalty on indexed addressing
+`ARR` (`$6B`) implements the non-decimal flag rules. Its decimal-mode behaviour is
+genuinely strange and is not modelled — irrelevant on a 2A03, which has decimal
+disabled.
 
-`abs,X`, `abs,Y` and `(zp),Y` cost one extra cycle on real hardware when the index
-carries into a new page. The addressing structs compute `data + regs->x` without
-reporting the carry, and the cycle count is a fixed template argument, so the penalty
-cannot be expressed. Measured: `LDA $30FF,X` with `X=1` costs 4 cycles; hardware
-charges 5.
+### Decimal mode is always available
 
-To fix, an addressing mode needs to return a "crossed" flag that `execute()` can add to
-its return value.
+`ADC`/`SBC` honour the `D` flag. The NES's 2A03 has decimal mode fused off, so a NES
+port needs a switch to disable it. This is the one place the core does *more* than that
+target hardware rather than less.
 
-### 5. `JMP ($xxFF)` does not reproduce the hardware wrap bug
+### Memory mirrors rather than faulting
 
-On a real 6502 the indirect vector's high byte is fetched from `$xx00`, not `$xx+1,00`.
-`IndirectParams::get16bit` uses the plain `READ16` macro, so `JMP ($30FF)` reads
-`$30FF`/`$3100`. Measured: the core jumps to `$5634` where hardware jumps to `$1234`.
-
-Some real programs depend on this quirk, so "fixing" it means *adding* the bug.
-
-### 6. No interrupts
-
-There is no IRQ or NMI path at all — no pending-interrupt state, no line to assert, and
-nothing that reads the `$FFFA`/`$FFFE` vectors except `BRK`. `RTI` is implemented and
-correct, but nothing can generate the frame it returns from. The `I` flag is
-maintained by `SEI`/`CLI` but never consulted.
-
-This is the single largest gap for any real system. See
-[nes-roadmap.md](nes-roadmap.md).
-
-### 7. Undocumented opcodes decode as `NOP`
-
-All 105 unassigned opcodes map to one shared 2-cycle `NOP`, with neither the correct
-cycle count nor the correct instruction length — so an undocumented 3-byte opcode
-leaves `PC` pointing into the middle of its own operands. Commercial NES software does
-use some of these (`LAX`, `SAX`, `DCP`, `ISC`, `SLO`, `RLA`, `SRE`, `RRA`, and the
-multi-byte `NOP`s).
-
-### 8. Reset and flag-restore details
-
-- `I6502Emulator::start()` zeroes the registers, sets `SP=$FD` and `SR=FLAG__`, but
-  does not set the `I` flag; hardware leaves interrupts disabled after reset.
-- `PLP` and `RTI` write the pulled byte to `SR` and force bit 5, but do not mask off
-  bit 4 (`B`). `B` is not a real register bit — it only exists in pushed copies.
-- Reset is charged 8 cycles; hardware takes 7.
-
-## Memory safety
-
-These are not accuracy issues but they will bite in a larger project.
-
-- `Memory::~Memory` calls `delete _bytes` on a buffer from `new uint8[]`. Undefined
-  behaviour; should be `delete[]`.
-- `Memory`'s constructor leaves the buffer uninitialised, so reads before any write
-  return garbage rather than a defined power-on pattern.
-- `checkAddress()` is empty and `read`/`write` never bound-check, so any `Memory`
-  smaller than 256 pages can be driven out of bounds by ordinary program execution.
-- The bulk `write(uint8*, int, uint16)` / `read(uint8*, int, uint16)` overloads
-  `memcpy` without checking `offset + length` against the buffer.
-- `UnAsm::unasm_line(Bus*, uint16)` constructs a `Registers` and sets only `pc`; the
-  other fields are read uninitialised (harmlessly today, but sanitisers will flag it).
+`Memory` wraps addresses beyond its allocated size (`address % size`) instead of running
+off the end. That keeps a short `Memory` memory-safe under any program and mirrors what
+undecoded address lines do on real hardware, but it will not tell you that a program
+strayed out of range. Allocate the full 256 pages if you want a flat 64 KB with no
+mirroring.
 
 ## Build and portability
 
-- **The Windows build is broken for everything but the library itself.**
-  `emu6502_lib` is `SHARED` with no `__declspec(dllexport)` anywhere, so MSVC emits no
-  import library and both `emu6502_test` and `emu6502_debugger` fail with `LNK1104:
-  cannot open 'emu6502_lib.lib'`. Fix by setting `WINDOWS_EXPORT_ALL_SYMBOLS ON` on the
-  target, adding an export macro, or making the library `STATIC`.
-- **The Win32 debugger has a duplicate manifest.** `debugger_src/Resource.rc:33`
-  embeds `Application.manifest` as an `RT_MANIFEST` resource while the linker generates
-  one too, giving `CVT1100: duplicate resource ... MANIFEST` and then `LNK1123`.
-  Adding `/MANIFEST:NO` to the target's link options resolves it; the `.manifest` entry
-  in `DEBUGGER_MANIFEST` can stay. Verified: with this plus the export fix, all three
-  targets build.
-- `src/parameters.h` includes both `emu_Bus.h` and `emu_bus.h`. Only the lowercase file
-  exists. This survives on Windows and on WSL's case-insensitive `drvfs` mount, but
-  will fail to compile on a genuinely case-sensitive filesystem — including most CI
-  containers.
-- `CMakeLists.txt` never calls `enable_testing()`/`add_test()`, so `ctest` finds
-  nothing; run `emu6502_test` directly.
-- Both debuggers open `test/6502_functional_test.bin` by relative path and silently
-  continue with an all-zero memory if it is missing.
+Both Windows build defects are fixed in `CMakeLists.txt`:
 
-## Suggested order of work
+- `emu6502_lib` sets `WINDOWS_EXPORT_ALL_SYMBOLS`, so MSVC produces the import library
+  that `emu6502_test` and `emu6502_debugger` need.
+- The debugger links with `/MANIFEST:NO`, because `debugger_src/Resource.rc` already
+  embeds `Application.manifest` as an `RT_MANIFEST` resource and letting the linker
+  generate a second one gave `CVT1100` / `LNK1123`.
 
-1. `(zp,X)` — one addressing mode, unlocks the full functional test as a regression gate.
-2. Wire the functional test into `emu6502_test` so it stays passing.
-3. `delete[]`, zero-init, and bounds checks in `Memory`.
-4. Interrupts (IRQ/NMI + `I`-flag gating).
-5. Branch cycles, then page-cross penalties.
-6. `std::atomic` for the run/stop flags; move `params` out of the instruction objects.
-7. Undocumented opcodes, `JMP ($xxFF)`, and the remaining flag details.
+`enable_testing()` and `add_test()` are in place, so `ctest` runs the suite.
+`testFunctional.cpp` finds its data file through the `EMU6502_TEST_DATA_DIR` compile
+definition rather than a relative path, so the suite passes from any working directory.
+
+The duplicated `emu_Bus.h` / `emu_bus.h` include in `src/parameters.h` is gone; all
+includes now match the on-disk filenames, so the tree builds on a case-sensitive
+filesystem.
+
+Both debuggers still open `test/6502_functional_test.bin` by relative path and continue
+with zeroed memory if it is missing — launch them from the repository root.

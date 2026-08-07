@@ -32,36 +32,49 @@ void default_clock::reset() {
 #if defined(_WIN32) || defined(__WIN32__) || defined(WIN32)
 #include <windows.h>
 
+/*
+ * QueryPerformanceCounter returns ticks in QueryPerformanceFrequency units --
+ * typically 10 MHz, i.e. 100 ns per tick -- not nanoseconds. Converting is what
+ * makes this clock agree with the nanosecond budgets in waitCycles().
+ *
+ * The counter is rebased on first use so that (ticks * 1e9) cannot overflow, and
+ * the conversion is split into whole seconds plus remainder to keep full
+ * precision without a wider integer type.
+ */
+static uint64_t qpcFrequency() {
+	LARGE_INTEGER f;
+	QueryPerformanceFrequency(&f);
+	return (uint64_t) f.QuadPart;
+}
+
+static uint64_t qpcTicks() {
+	LARGE_INTEGER t;
+	QueryPerformanceCounter(&t);
+	return (uint64_t) t.QuadPart;
+}
+
 uint64_t nanoTime() {
-	uint64_t time = 0;
-	QueryPerformanceCounter((LARGE_INTEGER *) &time);
-	return time;
+	static const uint64_t freq = qpcFrequency();
+	static const uint64_t base = qpcTicks();
+	uint64_t ticks = qpcTicks() - base;
+	return (ticks / freq) * 1000000000ULL + ((ticks % freq) * 1000000000ULL) / freq;
 }
 
-uint64_t nanocallMeasure() {
-
-	uint64_t time1 = 0, time2 = 0;
-	time1 = nanoTime();
-	for (int i = 0; i < 1000; i++) {
-		time2 = nanoTime();
-	}
-	return (time2 - time1) / 1000LL;
-}
-
-uint64_t _1nanotimeMeasure = nanocallMeasure();
-
-void _nanosleep(uint64_t ns){
-#ifdef USE_PRECISION_CLOCK
-	uint64_t time1 = 0, time2 = 0;
-	ns -=_1nanotimeMeasure*2;
-	QueryPerformanceCounter((LARGE_INTEGER *) &time1);
-	do {
-		Sleep(0);
-		QueryPerformanceCounter((LARGE_INTEGER *) &time2);
-	} while((time2-time1) < ns);
-#else
-    std::this_thread::sleep_for(std::chrono::nanoseconds(ns));
-#endif
+/*
+ * Sleep for ns nanoseconds.
+ *
+ * sleep_for on Windows has a granularity of roughly 1-15 ms, which is far
+ * coarser than a single 6502 cycle. Sleeping for all but the last millisecond
+ * and spinning out the remainder keeps the wait accurate without burning a core
+ * on long waits.
+ */
+void _nanosleep(uint64_t ns) {
+	const uint64_t SPIN_THRESHOLD = 1000000ULL; // 1 ms
+	uint64_t deadline = nanoTime() + ns;
+	if (ns > SPIN_THRESHOLD)
+		std::this_thread::sleep_for(std::chrono::nanoseconds(ns - SPIN_THRESHOLD));
+	while (nanoTime() < deadline)
+		YieldProcessor();
 }
 
 #elif defined __linux__
@@ -81,41 +94,59 @@ void _nanosleep(uint64_t ns) {
 }
 #endif
 
+/*
+ * Both pacing clocks track an absolute deadline rather than measuring each
+ * interval independently.
+ *
+ * Measuring per-interval and resetting the origin on every call double-counts:
+ * the time spent asleep in one call is charged against the next call's budget,
+ * so the CPU ends up running at roughly twice the requested speed. Accumulating
+ * a deadline also makes the pacing self-correcting -- an oversleep caused by
+ * coarse timer granularity is absorbed by not sleeping on subsequent calls
+ * until the deadline catches up.
+ *
+ * If the host falls further behind than RESYNC_NS -- a debugger breakpoint, a
+ * descheduled thread -- the deadline is snapped to the present instead of
+ * running flat out trying to make up time that no longer matters.
+ */
+static const int64_t RESYNC_NS = 50000000; // 50 ms
+
 precision_clock::precision_clock(double speed) :
-		m_cycle_time(0.000001 / speed), m_begin_time(0) {
+		m_cycle_time(0.000001 / speed), m_deadline(0) {
 }
 
 precision_clock::~precision_clock() {
 }
 
 void precision_clock::beginCycle() {
-	m_begin_time = nanoTime();
+	m_deadline = nanoTime();
 }
 
 void precision_clock::waitCycles(int cycles) {
 	default_clock::waitCycles(cycles);
-	uint64_t _end_time = nanoTime();
-	int64_t dur = _end_time - m_begin_time;
-	int64_t tm = (int64_t)(cycles * m_cycle_time * 1e9) - dur;
-	m_begin_time = _end_time;
-	if (tm > 0)
-		_nanosleep(tm);
+	m_deadline += (uint64_t) (cycles * m_cycle_time * 1e9);
+	uint64_t now = nanoTime();
+	if (m_deadline > now)
+		_nanosleep(m_deadline - now);
+	else if ((int64_t) (now - m_deadline) > RESYNC_NS)
+		m_deadline = now;
 }
 
-chrono_clock::chrono_clock(double speed) : m_cycle_time(0.000001/speed), m_begin_time() {
+chrono_clock::chrono_clock(double speed) : m_cycle_time(0.000001/speed), m_deadline() {
 }
 chrono_clock::~chrono_clock() {
 }
 void chrono_clock::beginCycle() {
-	m_begin_time = std::chrono::high_resolution_clock::now();
+	m_deadline = std::chrono::steady_clock::now();
 }
 
 void chrono_clock::waitCycles(int cycles) {
 	default_clock::waitCycles(cycles);
-	std::chrono::high_resolution_clock::time_point _end_time = std::chrono::high_resolution_clock::now();
-	std::chrono::duration<double> dur = _end_time - m_begin_time;
-	int64_t tm = (int64_t)((cycles * m_cycle_time  - dur.count()) * 1e9);
-	m_begin_time = _end_time;
-	if (tm > 0)
-		std::this_thread::sleep_for(std::chrono::nanoseconds(tm));
+	m_deadline += std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+			std::chrono::duration<double>(cycles * m_cycle_time));
+	std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+	if (m_deadline > now)
+		std::this_thread::sleep_for(m_deadline - now);
+	else if (std::chrono::duration_cast<std::chrono::nanoseconds>(now - m_deadline).count() > RESYNC_NS)
+		m_deadline = now;
 }

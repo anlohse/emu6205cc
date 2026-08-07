@@ -34,10 +34,11 @@ class ADC_Impl : public BaseInstruction {
 };
 ```
 
-Each addressing mode is a plain struct with a fixed four-method interface
-(`src/parameters.h`) — `init`, `get8bit`/`get16bit`, `set8bit`/`set16bit`. There is no
-common base class and no virtual call: the mode is a template argument, so the compiler
-inlines the whole address calculation into each instruction body.
+Each addressing mode is a plain struct with a fixed interface (`src/parameters.h`) —
+`init`, `get8bit`/`get16bit`, `set8bit`/`set16bit`, plus `extraCycles()` for the
+page-crossing penalty. They share a `ParamsBase` that carries the crossing flag, but
+dispatch is not virtual: the mode is a template argument, so the compiler inlines the
+whole address calculation into each instruction body.
 
 `Processor::_instruction_table` (in `src/Processor.cpp`) is then a literal 16×16
 transcription of the official opcode matrix:
@@ -50,32 +51,36 @@ new ADC_Impl<ZeroPageParams, 3>(),  // 0x65
 Unassigned opcodes point at a single shared `nop_instruction`.
 
 The payoff is that adding an operation means writing one template, and adding an
-addressing mode means writing one struct — the 151-entry matrix stays declarative. The
-cost is 151 distinct template instantiations and one `virtual` call per instruction.
+addressing mode means writing one struct — the 256-entry matrix stays declarative. That
+is what made filling in the undocumented opcodes cheap: most of them are an existing
+operation composed with an existing mode, or two operations chained. The cost is one
+`virtual` call per instruction.
 
 ### Consequences worth knowing
 
 - **The table is `static`.** All `Processor` instances share the same 256 instruction
   objects.
-- **Those objects hold mutable state.** `IParams params` is a *member*, and `init()`
-  writes to it. Execution is therefore not reentrant: two `Processor`s stepping on
-  different threads, or a nested `step()` from a callback, will corrupt each other's
-  operand. Single-threaded stepping is fine because `init()` and `get8bit()` always
-  happen inside one `execute()` call.
-- The 256 objects are `new`ed during static initialisation and never freed.
-
-Making `params` a local inside `execute()` instead of a member would remove the shared
-state at no cost, and would let the table become `constexpr`-friendly.
+- **The objects are stateless.** `IParams params` is a local inside `execute()`, not a
+  member, so nothing is carried between calls and the shared table is safe to use from
+  more than one `Processor` or thread.
+- The 256 objects are `new`ed during static initialisation and never freed. That is
+  deliberate — they live for the whole process.
 
 ## The fetch-execute loop
 
 ```cpp
 void Processor::step() {
-    int code = p_bus->read(p_regs->pc++);      // fetch
-    BaseInstruction* p_instr = _instruction_table[code];
-    int cycles = p_instr->execute(p_regs, p_bus);   // operands + effects
-    p_clock->waitCycles(cycles);                    // charge the clock
-    if (p_instr_callback) p_instr_callback();       // per-instruction hook
+    if (m_nmi_pending.exchange(false)) {                    // NMI ignores the I flag
+        p_clock->waitCycles(serviceInterrupt(0xFFFA));
+    } else if (m_irq_line.load() && !p_regs->getStatus(FLAG_I)) {
+        p_clock->waitCycles(serviceInterrupt(0xFFFE));
+    } else {
+        int code = p_bus->read(p_regs->pc++);               // fetch
+        BaseInstruction* p_instr = _instruction_table[code];
+        int cycles = p_instr->execute(p_regs, p_bus);       // operands + effects
+        p_clock->waitCycles(cycles);                        // charge the clock
+    }
+    if (p_instr_callback) p_instr_callback();               // per-step hook
 }
 ```
 
@@ -88,6 +93,31 @@ CPU. It returns after a whole instruction, so this is an **instruction-stepped**
 core, not a cycle-stepped one; see [nes-roadmap.md](nes-roadmap.md) for why that
 matters.
 
+### Cycle accounting
+
+The template's `cycles` argument is the base cost. Two adjustments happen at run time:
+
+- **Branches** return `cycles + 1` when taken and `cycles + 2` when the target is also
+  in a different page, via the shared `branch()` helper.
+- **Indexed reads** add `params.extraCycles()`, which is 1 when adding the index
+  carried into a new page. Only read instructions do this — stores and read-modify-write
+  instructions always pay for the extra bus cycle, and that is already in their base
+  count, so `STA $30FF,X` is 5 cycles whether it crosses or not.
+
+## Interrupts
+
+`Processor` exposes two lines. `nmi()` latches an edge-triggered request that is
+serviced regardless of the `I` flag; `irq(bool)` holds a level-triggered line that is
+serviced whenever `I` is clear. Both are `std::atomic<bool>`, so a device on another
+thread can assert them safely.
+
+`serviceInterrupt()` pushes `PC` and then `SR` with `B` **clear** — that is how a
+handler tells a hardware interrupt from `BRK`, which pushes the same byte with `B` set —
+sets `I`, loads `PC` from the vector, and charges 7 cycles.
+
+Interrupts are polled at instruction boundaries rather than mid-instruction, which
+skips two hardware edge cases documented in [accuracy.md](accuracy.md#interrupts-are-polled-at-instruction-boundaries).
+
 ## Memory and the bus
 
 `Memory` is a flat `uint8` array of `pages * 256` bytes with no address decoding.
@@ -97,18 +127,16 @@ matters.
 with memory-mapped I/O subclasses `Bus` and decodes the address before deciding where
 the access lands. The base class only knows how to talk to one `Memory`.
 
-Two rough edges in `Memory`:
+`Memory` zero-fills on construction, and addresses beyond the allocated size wrap
+(`address % size`) rather than running off the end — which keeps a short `Memory`
+memory-safe and mirrors what undecoded address lines do on hardware. In the common case
+of a full 64 KB block every `uint16` is in range, so the bounds check is a branch that
+is never taken. The bulk `read`/`write` overloads clamp their length.
 
-- `checkAddress()` is an empty function, and `read`/`write` accept the full 16-bit
-  range regardless of how many pages were allocated. `Memory(2)` allocates 512 bytes
-  but will happily be asked for `$FFFF`.
-- The buffer is left uninitialised by the constructor, and the destructor uses
-  `delete` on an array allocated with `new[]`.
-
-There is also an overload hazard: `Memory::write(0, x)` binds `0` to the
-`write(uint8* src, int length, uint16 offsetDest)` overload as a null pointer constant,
-not to `write(uint16 address, uint8 value)`. Cast the address to `uint16` when the
-literal is zero.
+One overload hazard remains, and it is inherent to the signatures:
+`Memory::write(0, x)` binds `0` to the `write(uint8* src, int length, uint16
+offsetDest)` overload as a null pointer constant, not to `write(uint16 address, uint8
+value)`. Cast the address to `uint16` when the literal is zero.
 
 ## Stack helpers
 
@@ -125,34 +153,46 @@ low then high.
 | Class | Behaviour |
 | --- | --- |
 | `default_clock` | Counts cycles, never sleeps. Use for tests and headless runs. |
-| `chrono_clock(mhz)` | Paces with `std::chrono` + `sleep_for`. Unit-correct. |
-| `precision_clock(mhz)` | Intended to be tighter; see the caveat below. |
+| `chrono_clock(mhz)` | Paces with `std::chrono` + `sleep_for`. |
+| `precision_clock(mhz)` | Sleeps the bulk of a wait, spins the last millisecond. |
 
 `cycles()` returns the running total and is what a debugger displays.
 
-**`precision_clock` is currently miscalibrated on Windows.** `nanoTime()` returns a raw
-`QueryPerformanceCounter` value, which is measured in units of
-`QueryPerformanceFrequency` — 10 MHz (100 ns per tick) on typical Windows 11 hardware,
-not 1 ns. `waitCycles` subtracts that tick count from a nanosecond budget, so elapsed
-time is under-counted by ~100× and the clock over-sleeps. The Linux path uses
-`clock_gettime(CLOCK_MONOTONIC)` and is genuinely nanoseconds. The tighter busy-wait
-loop is also behind `#ifdef USE_PRECISION_CLOCK`, which the build never defines.
+Both pacing clocks track an **absolute deadline** that advances by the cycle budget on
+every call, rather than measuring each interval from a fresh origin. That distinction
+matters more than it looks:
 
-Independently of that bug, per-instruction sleeping cannot pace a 1 MHz CPU on a
-desktop OS: a 2-cycle instruction is 2 µs, while `sleep_for` granularity is ~1–15 ms.
-Real emulators run a batch of cycles (a frame, a scanline) and sleep once at the
-boundary. `default_clock` plus your own frame pacing is the practical choice.
+- Resetting the origin on each call charges the time spent asleep to the *next* call's
+  budget, so the CPU runs at roughly twice the requested speed.
+- An accumulated deadline is self-correcting. `sleep_for` granularity on Windows is
+  ~1–15 ms, far coarser than the 2 µs of a 2-cycle instruction, so any single sleep
+  massively overshoots — but the overshoot is absorbed by not sleeping again until the
+  deadline catches up.
+
+Measured over 100,000 cycles at 1 MHz (a 100 ms target): `precision_clock` lands on
+100 ms and `chrono_clock` on ~108 ms. If the host falls more than 50 ms behind — a
+breakpoint, a descheduled thread — the deadline snaps to the present instead of running
+flat out to make up time that no longer matters.
+
+`precision_clock` converts `QueryPerformanceCounter` from its own frequency units
+(10 MHz, i.e. 100 ns per tick, on typical Windows hardware) into nanoseconds, rebasing
+the counter on first use so the multiply cannot overflow. The Linux path uses
+`clock_gettime(CLOCK_MONOTONIC)`.
+
+For a full system you still probably want `default_clock` plus your own per-frame
+pacing — one sleep per frame beats tens of thousands of tiny ones.
 
 ## Threading
 
 `Processor::run()` blocks the calling thread. Both debuggers therefore run it on a
 `std::thread` and stop it by setting a flag from the UI thread.
 
-That flag is `volatile bool m_running` / `m_stopping`. `volatile` is not a
-synchronisation primitive in C++ — it provides no atomicity and no ordering, so this is
-a data race. `std::atomic<bool>` is the correct type and costs nothing here.
-`I6502Emulator::stop()` also spins on `isRunning()` with `std::this_thread::yield()`
-rather than waiting on a condition variable.
+The run/stop flags and both interrupt lines are `std::atomic<bool>`, so asserting an
+interrupt or requesting a pause from another thread is well defined. (They used to be
+`volatile`, which in C++ provides neither atomicity nor ordering and was a data race.)
+
+`I6502Emulator::stop()` still spins on `isRunning()` with `std::this_thread::yield()`
+rather than waiting on a condition variable — correct, but not the tidiest way to wait.
 
 ## Debugging support
 

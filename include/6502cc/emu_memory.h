@@ -20,13 +20,15 @@
 /**
  * A flat block of RAM, sized in 256-byte pages.
  *
- * @warning There is no bounds checking. read()/write() accept the full 16-bit
- * address range no matter how many pages were allocated, so any Memory smaller
- * than 256 pages can be driven out of bounds by ordinary program execution.
- * Pass 256 unless you are certain the program stays in range.
+ * The buffer is zero-filled on construction, so reads before any write return a
+ * defined value.
  *
- * @warning The buffer is not zero-initialised; contents before the first write
- * are indeterminate.
+ * Addresses beyond the allocated size wrap around (`address % size`) rather than
+ * running off the end, which mirrors what undecoded address lines do on real
+ * hardware and keeps a short Memory memory-safe under any program. Allocate the
+ * full 256 pages if you do not want mirroring.
+ *
+ * The bulk read()/write() overloads clamp their length to the buffer.
  *
  * @note Overload hazard: `write(0, x)` binds the literal `0` to the
  * `write(uint8*, int, uint16)` overload as a null pointer constant, not to
@@ -37,23 +39,28 @@ class Memory {
 private:
 	uint8* _bytes;
 	uint16 _pages;
-	void checkAddress(uint16 ad);
+	int _size;
+	/** Wrap an address into the allocated range. */
+	int checkAddress(uint16 ad) const;
 public:
-	/** Allocate @p pages * 256 bytes of uninitialised storage. */
+	/** Allocate @p pages * 256 zeroed bytes. A page count of 0 is treated as 1. */
 	Memory(uint16 pages);
 	/** Allocate, then copy @p length bytes from @p data to @p offsetDest. */
 	Memory(uint16 pages, uint8* data, int length, uint16 offsetDest = 0);
 	virtual ~Memory();
 
-	/** Bulk load. No bounds check on offsetDest + length. */
+	/** Bulk load; length is clamped to what fits from @p offsetDest. */
 	virtual void write(uint8* src, int length, uint16 offsetDest = 0);
-	/** Bulk read. No bounds check on offsetSrc + length. */
+	/** Bulk read; length is clamped to what fits from @p offsetSrc. */
 	virtual void read(uint8* dst, int length, uint16 offsetSrc = 0);
 
 	/** Store one byte. */
 	virtual void write(uint16 address, uint8 value);
 	/** Load one byte. */
 	virtual uint8 read(uint16 address);
+
+	/** Allocated size in bytes. */
+	int size() const;
 
 	/** Direct view of the backing buffer, for memory dumps. */
 	virtual const uint8* ptr() const;

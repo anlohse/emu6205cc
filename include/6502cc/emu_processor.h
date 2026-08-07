@@ -4,6 +4,7 @@
 #include "emu_base.h"
 #include "emu_memory.h"
 #include "emu_bus.h"
+#include <atomic>
 #include <unordered_set>
 #include <functional>
 
@@ -38,11 +39,9 @@ public:
 /**
  * The interpreter: fetch, decode, execute.
  *
- * Holds no state of its own beyond the run flags — registers, memory and
- * pacing are all borrowed. The caller owns all three and must keep them alive.
- *
- * @note There is no IRQ or NMI support. BRK and RTI work, but nothing can
- * assert an interrupt line. See docs/nes-roadmap.md.
+ * Holds no state of its own beyond the run and interrupt flags — registers,
+ * memory and pacing are all borrowed. The caller owns all three and must keep
+ * them alive.
  */
 class Processor {
 public:
@@ -52,11 +51,19 @@ protected:
 	Bus* p_bus;
 	Registers* p_regs;
 	emu_clock* p_clock;
-	/** Shared 256-entry opcode table; unassigned opcodes map to a 2-cycle NOP. */
+	/** Shared 256-entry opcode table, covering all 256 opcodes. */
 	static BaseInstruction* _instruction_table[256];
-	volatile bool m_running;   //!< Should be std::atomic<bool>; read across threads.
-	volatile bool m_stopping;  //!< Should be std::atomic<bool>; written by pause().
+	std::atomic<bool> m_running;
+	std::atomic<bool> m_stopping;
+	std::atomic<bool> m_nmi_pending;  //!< Edge-triggered: latched until serviced.
+	std::atomic<bool> m_irq_line;     //!< Level-triggered: held while a device asserts it.
 	InstructionCallBackType p_instr_callback;
+
+	/**
+	 * Push PC and SR, disable interrupts and jump through @p vector.
+	 * @return the cycle cost of the sequence.
+	 */
+	int serviceInterrupt(uint16 vector);
 public:
 	Processor(Bus* _bus, Registers* _regs, emu_clock* _clock);
 	virtual ~Processor();
@@ -68,13 +75,15 @@ public:
 	virtual void run();
 
 	/**
-	 * Execute exactly one instruction: fetch at pc, execute, charge the clock,
-	 * then fire the instruction callback.
+	 * Execute exactly one instruction, or service a pending interrupt.
 	 *
-	 * This is the integration point for co-processors. The returned cycle cost
-	 * is charged to the clock, so read emu_clock::cycles() before and after to
-	 * learn how long the instruction took and advance a PPU or APU by the same
-	 * amount.
+	 * Interrupts are checked before the opcode fetch: a latched NMI wins, then
+	 * IRQ if the I flag is clear. Either way the clock is charged and the
+	 * instruction callback fires.
+	 *
+	 * This is the integration point for co-processors. The cycle cost is
+	 * charged to the clock, so read emu_clock::cycles() before and after to
+	 * learn how long the step took and advance a PPU or APU by the same amount.
 	 */
 	virtual void step();
 
@@ -83,6 +92,29 @@ public:
 	/** Resume execution by re-entering run(). Blocks like run() does. */
 	virtual void resume();
 	bool isRunning() const;
+
+	/**
+	 * Assert the NMI line.
+	 *
+	 * Edge-triggered: the request latches and is serviced before the next
+	 * instruction regardless of the I flag. Safe to call from another thread.
+	 */
+	void nmi();
+
+	/**
+	 * Hold or release the IRQ line.
+	 *
+	 * Level-triggered: while asserted, an interrupt is serviced before every
+	 * instruction for as long as the I flag is clear. The device is responsible
+	 * for releasing the line once its handler acknowledges it. Safe to call
+	 * from another thread.
+	 */
+	void irq(bool asserted);
+
+	bool nmiPending() const;
+	bool irqAsserted() const;
+	/** Drop any latched NMI and release the IRQ line. Called on reset. */
+	void clearInterrupts();
 
 	/** Install a hook fired after every instruction. Keep it cheap. */
 	void setInstructionCallback(const InstructionCallBackType& _instr_callback);

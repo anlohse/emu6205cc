@@ -31,8 +31,12 @@ set(COMMON_SOURCES
 
 add_library(emu6502_lib SHARED ${COMMON_SOURCES})
 
+# MSVC emits no import library for a SHARED target unless something is exported.
+# Exporting everything keeps the headers free of dllexport macros.
+set_target_properties(emu6502_lib PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+
 # Public include directories for the library users
-target_include_directories(emu6502_lib PUBLIC 
+target_include_directories(emu6502_lib PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
@@ -64,7 +68,13 @@ if(WIN32)
 
     # Link against the common library and Windows Common Controls
     target_link_libraries(emu6502_debugger PRIVATE emu6502_lib comctl32)
-    
+
+    # Resource.rc already embeds Application.manifest as RT_MANIFEST. Letting the
+    # linker generate one as well produces CVT1100 (duplicate resource) / LNK1123.
+    if(MSVC)
+        target_link_options(emu6502_debugger PRIVATE /MANIFEST:NO)
+    endif()
+
     # Ensure resource compiler can find headers
     target_include_directories(emu6502_debugger PRIVATE debugger_src)
 else()
@@ -94,12 +104,24 @@ FetchContent_MakeAvailable(doctest)
 # ------------------------------------------------------------------------------
 # Unit Tests
 # ------------------------------------------------------------------------------
+enable_testing()
+
 set(TEST_SOURCES
     test_src/testAdc.cpp
     test_src/testAsm.cpp
+    test_src/testCpu.cpp
+    test_src/testFunctional.cpp
     test_src/testMain.cpp
 )
 
 add_executable(emu6502_test ${TEST_SOURCES})
 
 target_link_libraries(emu6502_test PRIVATE emu6502_lib doctest::doctest)
+
+# testFunctional locates test/6502_functional_test.bin relative to the source tree,
+# so the suite passes regardless of the working directory it is launched from.
+target_compile_definitions(emu6502_test PRIVATE
+    EMU6502_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test"
+)
+
+add_test(NAME emu6502_test COMMAND emu6502_test)

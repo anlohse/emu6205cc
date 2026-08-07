@@ -3,19 +3,48 @@
  *
  *  Created on: 18 de jul. de 2021
  *      Author: alanl
+ *
+ * Addressing modes.
+ *
+ * Each struct is a compile-time policy plugged into the instruction templates in
+ * InstructionImpl.h. The contract is:
+ *
+ *   init(regs, bus)        consume the operand bytes and advance regs->pc
+ *   get8bit / get16bit     resolve to a value
+ *   set8bit / set16bit     resolve to an address and store
+ *   extraCycles()          page-crossing penalty, valid only after a get/set
+ *
+ * A params object is constructed fresh inside every execute() call, so it holds
+ * no state between instructions and execution is reentrant.
  */
 
 #ifndef PARAMETERS_H_
 #define PARAMETERS_H_
 
 #include "../include/6502cc/emu_base.h"
-#include "../include/6502cc/emu_Bus.h"
 #include "../include/6502cc/emu_bus.h"
 
 #define READ16(ad) (bus->read(ad) | (bus->read(ad+1) << 8))
 #define WRITE16(ad,val) bus->write(ad, val & 0xff); bus->write(ad+1, (val >> 8) & 0xff)
 
-struct NullParams {
+/** Read a 16-bit value from the zero page, wrapping the high byte within it. */
+#define ZP_READ16(bus,zp) ((bus)->read((uint8)(zp)) | ((bus)->read((uint8)((zp) + 1)) << 8))
+
+/**
+ * Common state for addressing modes.
+ *
+ * m_crossed is set by the indexed modes when adding the index register carries
+ * into a new page. Read instructions add it to their cycle count; stores and
+ * read-modify-write instructions do not, because they always pay for the extra
+ * bus cycle regardless.
+ */
+struct ParamsBase {
+	bool m_crossed;
+	ParamsBase() : m_crossed(false) { }
+	int extraCycles() const { return m_crossed ? 1 : 0; }
+};
+
+struct NullParams : ParamsBase {
 	void init(Registers* regs, Bus* bus) {
 	}
 	uint8 get8bit(Registers* regs, Bus* bus) {
@@ -30,7 +59,7 @@ struct NullParams {
 	}
 };
 
-struct AccumulatorParams {
+struct AccumulatorParams : ParamsBase {
 	void init(Registers* regs, Bus* bus) {
 	}
 	uint8 get8bit(Registers* regs, Bus* bus) {
@@ -47,7 +76,7 @@ struct AccumulatorParams {
 	}
 };
 
-struct ImmediateParams {
+struct ImmediateParams : ParamsBase {
 	uint8 data;
 	void init(Registers* regs, Bus* bus) {
 		data = bus->read(regs->pc++);
@@ -64,7 +93,7 @@ struct ImmediateParams {
 	}
 };
 
-struct ZeroPageParams {
+struct ZeroPageParams : ParamsBase {
 	uint8 data;
 	void init(Registers* regs, Bus* bus) {
 		data = bus->read(regs->pc++);
@@ -73,17 +102,18 @@ struct ZeroPageParams {
 		return bus->read(PG2ABS(0, data));
 	}
 	uint16 get16bit(Registers* regs, Bus* bus) {
-		return READ16(PG2ABS(0, data));
+		return ZP_READ16(bus, data);
 	}
 	void set8bit(Registers* regs, Bus* bus, uint8 val) {
 		bus->write(PG2ABS(0, data), val);
 	}
 	void set16bit(Registers* regs, Bus* bus, uint16 val) {
-		WRITE16(PG2ABS(0, data), val);
+		bus->write((uint8)data, val & 0xff);
+		bus->write((uint8)(data + 1), (val >> 8) & 0xff);
 	}
 };
 
-struct ZeroPageXParams {
+struct ZeroPageXParams : ParamsBase {
 	uint8 data;
 	void init(Registers* regs, Bus* bus) {
 		data = bus->read(regs->pc++);
@@ -94,7 +124,7 @@ struct ZeroPageXParams {
 	}
 	uint16 get16bit(Registers* regs, Bus* bus) {
 		uint8 ad = data + regs->x;
-		return READ16(PG2ABS(0, ad));
+		return ZP_READ16(bus, ad);
 	}
 	void set8bit(Registers* regs, Bus* bus, uint8 val) {
 		uint8 ad = data + regs->x;
@@ -102,11 +132,12 @@ struct ZeroPageXParams {
 	}
 	void set16bit(Registers* regs, Bus* bus, uint16 val) {
 		uint8 ad = data + regs->x;
-		WRITE16(PG2ABS(0, ad), val);
+		bus->write((uint8)ad, val & 0xff);
+		bus->write((uint8)(ad + 1), (val >> 8) & 0xff);
 	}
 };
 
-struct ZeroPageYParams {
+struct ZeroPageYParams : ParamsBase {
 	uint8 data;
 	void init(Registers* regs, Bus* bus) {
 		data = bus->read(regs->pc++);
@@ -117,7 +148,7 @@ struct ZeroPageYParams {
 	}
 	uint16 get16bit(Registers* regs, Bus* bus) {
 		uint8 ad = data + regs->y;
-		return READ16(PG2ABS(0, ad));
+		return ZP_READ16(bus, ad);
 	}
 	void set8bit(Registers* regs, Bus* bus, uint8 val) {
 		uint8 ad = data + regs->y;
@@ -125,11 +156,12 @@ struct ZeroPageYParams {
 	}
 	void set16bit(Registers* regs, Bus* bus, uint16 val) {
 		uint8 ad = data + regs->y;
-		WRITE16(PG2ABS(0, ad), val);
+		bus->write((uint8)ad, val & 0xff);
+		bus->write((uint8)(ad + 1), (val >> 8) & 0xff);
 	}
 };
 
-struct RelativeParams {
+struct RelativeParams : ParamsBase {
 	uint8 data;
 	void init(Registers* regs, Bus* bus) {
 		data = bus->read(regs->pc++);
@@ -147,7 +179,7 @@ struct RelativeParams {
 };
 
 
-struct AbsConstParams {
+struct AbsConstParams : ParamsBase {
 	uint16 data;
 	void init(Registers* regs, Bus* bus) {
 		data = bus->read(regs->pc) | (bus->read(regs->pc+1) << 8);
@@ -165,7 +197,7 @@ struct AbsConstParams {
 	}
 };
 
-struct AbsoluteParams {
+struct AbsoluteParams : ParamsBase {
 	uint16 data;
 	void init(Registers* regs, Bus* bus) {
 		data = bus->read(regs->pc) | (bus->read(regs->pc+1) << 8);
@@ -185,55 +217,76 @@ struct AbsoluteParams {
 	}
 };
 
-struct AbsoluteXParams {
+struct AbsoluteXParams : ParamsBase {
 	uint16 data;
 	void init(Registers* regs, Bus* bus) {
 		data = bus->read(regs->pc) | (bus->read(regs->pc+1) << 8);
 		regs->pc += 2;
 	}
-	uint8 get8bit(Registers* regs, Bus* bus) {
+	/** Effective address before indexing -- needed by the SHx family. */
+	uint16 base(Registers* regs, Bus* bus) {
+		return data;
+	}
+	uint16 addr(Registers* regs, Bus* bus) {
 		uint16 ad = data + regs->x;
-		return bus->read(ad);
+		m_crossed = (ad & 0xff00) != (data & 0xff00);
+		return ad;
+	}
+	uint8 get8bit(Registers* regs, Bus* bus) {
+		return bus->read(addr(regs, bus));
 	}
 	uint16 get16bit(Registers* regs, Bus* bus) {
-		uint16 ad = data + regs->x;
+		uint16 ad = addr(regs, bus);
 		return READ16(ad);
 	}
 	void set8bit(Registers* regs, Bus* bus, uint8 val) {
-		uint16 ad = data + regs->x;
-		bus->write(ad, val);
+		bus->write(addr(regs, bus), val);
 	}
 	void set16bit(Registers* regs, Bus* bus, uint16 val) {
-		uint16 ad = data + regs->x;
+		uint16 ad = addr(regs, bus);
 		WRITE16(ad, val);
 	}
 };
 
-struct AbsoluteYParams {
+struct AbsoluteYParams : ParamsBase {
 	uint16 data;
 	void init(Registers* regs, Bus* bus) {
 		data = bus->read(regs->pc) | (bus->read(regs->pc+1) << 8);
 		regs->pc += 2;
 	}
-	uint8 get8bit(Registers* regs, Bus* bus) {
+	/** Effective address before indexing -- needed by the SHx family. */
+	uint16 base(Registers* regs, Bus* bus) {
+		return data;
+	}
+	uint16 addr(Registers* regs, Bus* bus) {
 		uint16 ad = data + regs->y;
-		return bus->read(ad);
+		m_crossed = (ad & 0xff00) != (data & 0xff00);
+		return ad;
+	}
+	uint8 get8bit(Registers* regs, Bus* bus) {
+		return bus->read(addr(regs, bus));
 	}
 	uint16 get16bit(Registers* regs, Bus* bus) {
-		uint16 ad = data + regs->y;
+		uint16 ad = addr(regs, bus);
 		return READ16(ad);
 	}
 	void set8bit(Registers* regs, Bus* bus, uint8 val) {
-		uint16 ad = data + regs->y;
-		bus->write(ad, val);
+		bus->write(addr(regs, bus), val);
 	}
 	void set16bit(Registers* regs, Bus* bus, uint16 val) {
-		uint16 ad = data + regs->y;
+		uint16 ad = addr(regs, bus);
 		WRITE16(ad, val);
 	}
 };
 
-struct IndirectParams {
+/**
+ * Indirect, used only by JMP ($nnnn).
+ *
+ * Reproduces the hardware bug: the vector's high byte is fetched from the start
+ * of the same page rather than from the next one, so JMP ($30FF) reads $30FF and
+ * $3000. Some real programs depend on this.
+ */
+struct IndirectParams : ParamsBase {
 	uint16 data;
 	void init(Registers* regs, Bus* bus) {
 		data = bus->read(regs->pc) | (bus->read(regs->pc+1) << 8);
@@ -243,7 +296,8 @@ struct IndirectParams {
 		return bus->read(data);
 	}
 	uint16 get16bit(Registers* regs, Bus* bus) {
-		return READ16(data);
+		uint16 hi = (data & 0xff00) | ((data + 1) & 0x00ff);
+		return bus->read(data) | (bus->read(hi) << 8);
 	}
 	void set8bit(Registers* regs, Bus* bus, uint8 val) {
 	}
@@ -251,49 +305,72 @@ struct IndirectParams {
 	}
 };
 
-struct IndirectXParams {
+/**
+ * Indexed indirect, (zp,X).
+ *
+ * X is added to the zero-page operand to select the pointer; both pointer bytes
+ * are fetched from the zero page with wraparound. The index is NOT applied to
+ * the resulting target address.
+ */
+struct IndirectXParams : ParamsBase {
 	uint8 data;
 	void init(Registers* regs, Bus* bus) {
 		data = bus->read(regs->pc++);
 	}
+	uint16 addr(Registers* regs, Bus* bus) {
+		uint8 zp = data + regs->x;
+		return ZP_READ16(bus, zp);
+	}
 	uint8 get8bit(Registers* regs, Bus* bus) {
-		uint16 address = bus->read(data) | (bus->read(data+1) << 8);
-		return bus->read(address + regs->x);
+		return bus->read(addr(regs, bus));
 	}
 	uint16 get16bit(Registers* regs, Bus* bus) {
-		uint16 address = bus->read(data) | (bus->read(data+1) << 8);
-		return READ16(address + regs->x);
+		uint16 ad = addr(regs, bus);
+		return READ16(ad);
 	}
 	void set8bit(Registers* regs, Bus* bus, uint8 val) {
-		uint16 address = bus->read(data) | (bus->read(data+1) << 8);
-		bus->write(address + regs->x, val);
+		bus->write(addr(regs, bus), val);
 	}
 	void set16bit(Registers* regs, Bus* bus, uint16 val) {
-		uint16 address = bus->read(data) | (bus->read(data+1) << 8);
-		WRITE16(address + regs->x, val);
+		uint16 ad = addr(regs, bus);
+		WRITE16(ad, val);
 	}
 };
 
-struct IndirectYParams {
+/**
+ * Indirect indexed, (zp),Y.
+ *
+ * The pointer is fetched from the zero page (with wraparound) and Y is added to
+ * the 16-bit result, which may cross a page.
+ */
+struct IndirectYParams : ParamsBase {
 	uint8 data;
 	void init(Registers* regs, Bus* bus) {
 		data = bus->read(regs->pc++);
 	}
+	/** Pointer value before Y is added -- needed by the SHx family. */
+	uint16 base(Registers* regs, Bus* bus) {
+		return ZP_READ16(bus, data);
+	}
+	uint16 addr(Registers* regs, Bus* bus) {
+		uint16 ptr = base(regs, bus);
+		uint16 ad = ptr + regs->y;
+		m_crossed = (ad & 0xff00) != (ptr & 0xff00);
+		return ad;
+	}
 	uint8 get8bit(Registers* regs, Bus* bus) {
-		uint16 address = bus->read(data) | (bus->read(data+1) << 8);
-		return bus->read(address + regs->y);
+		return bus->read(addr(regs, bus));
 	}
 	uint16 get16bit(Registers* regs, Bus* bus) {
-		uint16 address = bus->read(data) | (bus->read(data+1) << 8);
-		return READ16(address + regs->y);
+		uint16 ad = addr(regs, bus);
+		return READ16(ad);
 	}
 	void set8bit(Registers* regs, Bus* bus, uint8 val) {
-		uint16 address = bus->read(data) | (bus->read(data+1) << 8);
-		bus->write(address + regs->y, val);
+		bus->write(addr(regs, bus), val);
 	}
 	void set16bit(Registers* regs, Bus* bus, uint16 val) {
-		uint16 address = bus->read(data) | (bus->read(data+1) << 8);
-		WRITE16(address + regs->y, val);
+		uint16 ad = addr(regs, bus);
+		WRITE16(ad, val);
 	}
 };
 

@@ -275,8 +275,26 @@ std::string uppercopy(const std::string& _str) {
 	return str;
 }
 
+/*
+ * Operand grammar. Capture groups:
+ *   1  mnemonic
+ *   2  '('
+ *   3  '#'
+ *   4  '$' + hex digits
+ *   5  index written before ')'   6  its register letter
+ *   7  ')'
+ *   8  index written after ')'    9  its register letter
+ *  10  signed decimal (branch displacement)
+ *  11  'a' (accumulator)
+ *  12  comment
+ *
+ * Both indirect forms use conventional 6502 syntax: ($nn,X) is indexed
+ * indirect, ($nn),Y is indirect indexed.
+ */
 std::vector<uint8> Asm::compile(const std::vector<std::string> &lines) {
-	std::string rgx_str = "^\\s*([a-z]+)(\\s+|$)(\\()?(\\#)?(\\$[0-9a-f]+)?(\\))?((\\+|-)?\\d+)?(a)?(\\s*,\\s*(x|y))?\\s*(;.*?)?$";
+	std::string rgx_str =
+			"^\\s*([a-z]+)(?:\\s+|$)(\\()?(\\#)?(\\$[0-9a-f]+)?(\\s*,\\s*([xy]))?(\\))?"
+			"(\\s*,\\s*([xy]))?((?:\\+|-)?\\d+)?(a)?\\s*(;.*)?$";
 	std::regex rgx(rgx_str, std::regex::ECMAScript | std::regex::icase);
 	auto line = lines.begin();
 	auto lend = lines.end();
@@ -295,35 +313,66 @@ std::vector<uint8> Asm::compile(const std::vector<std::string> &lines) {
 		if (m.size() > 0) {
 			auto instr = m[1];
 			int type = AsmInstrKey::Unkown;
-			auto opar = m[3];
-			auto imm = m[4];
-			auto val = m[5];
-			auto cpar = m[6];
-			auto rel = m[7];
-			auto rega = m[9];
-			auto regxy = m[11];
-			if (imm.length() == 0 && val.length() == 0 && opar.length() == 0 && cpar.length() == 0 && rel.length() == 0 && rega.length() == 0 && regxy.length() == 0)
+			bool opar = m[2].length() > 0;
+			bool imm = m[3].length() > 0;
+			auto val = m[4];
+			std::string inner = uppercopy(m[6].str());
+			bool cpar = m[7].length() > 0;
+			std::string outer = uppercopy(m[9].str());
+			auto rel = m[10];
+			bool rega = m[11].length() > 0;
+
+			// $XX is 3 characters, $XXXX is 5 -- the width picks zero page vs absolute.
+			bool zp = val.length() == 3;
+			bool abs = val.length() == 5;
+			bool noVal = val.length() == 0;
+			bool noIdx = inner.empty() && outer.empty();
+			bool noRel = rel.length() == 0;
+
+			if (opar != cpar) {
+				type = AsmInstrKey::Unkown;   // unbalanced parentheses
+			} else if (opar) {
+				// Indirect forms: ($nnnn), ($nn,X), ($nn),Y
+				if (imm || rega || !noRel)
+					type = AsmInstrKey::Unkown;
+				else if (abs && noIdx)
+					type = AsmInstrKey::Indirect;
+				else if (zp && inner == "X" && outer.empty())
+					type = AsmInstrKey::Indirect_X;
+				else if (zp && inner.empty() && outer == "Y")
+					type = AsmInstrKey::Indirect_Y;
+			} else if (imm) {
+				if (zp && noIdx && noRel && !rega)
+					type = AsmInstrKey::Immediate;
+			} else if (rega) {
+				if (noVal && noIdx && noRel)
+					type = AsmInstrKey::Accumulator;
+			} else if (!noRel) {
+				if (noVal && noIdx)
+					type = AsmInstrKey::Relative;
+			} else if (noVal && noIdx) {
 				type = AsmInstrKey::Implied;
-			else if (imm.length() > 0 && val.length() == 3 && opar.length() == 0 && cpar.length() == 0 && rel.length() == 0 && rega.length() == 0 && regxy.length() == 0)
-				type = AsmInstrKey::Immediate;
-			else if (imm.length() == 0 && val.length() == 5 && opar.length() == 0 && cpar.length() == 0 && rel.length() == 0 && rega.length() == 0 && regxy.length() == 0)
-				type = AsmInstrKey::Absolute;
-			else if (imm.length() == 0 && val.length() == 5 && opar.length() == 0 && cpar.length() == 0 && rel.length() == 0 && rega.length() == 0 && regxy.length() == 1)
-				type = (regxy.str() == "x" || regxy.str() == "X") ? AsmInstrKey::Absolute_X : AsmInstrKey::Absolute_Y;
-			else if (imm.length() == 0 && val.length() == 0 && opar.length() == 0 && cpar.length() == 0 && rel.length() == 0 && rega.length() == 1 && regxy.length() == 0)
-				type = AsmInstrKey::Accumulator;
-			else if (imm.length() == 0 && val.length() == 5 && opar.length() == 1 && cpar.length() == 1 && rel.length() == 0 && rega.length() == 0 && regxy.length() == 0)
-				type = AsmInstrKey::Indirect;
-			else if (imm.length() == 0 && val.length() == 3 && opar.length() == 1 && cpar.length() == 1 && rel.length() == 0 && rega.length() == 0 && regxy.length() == 1)
-				type = (regxy.str() == "x" || regxy.str() == "X") ? AsmInstrKey::Indirect_X : AsmInstrKey::Indirect_Y;
-			else if (imm.length() == 0 && val.length() == 3 && opar.length() == 0 && cpar.length() == 0 && rel.length() == 0 && rega.length() == 0 && regxy.length() == 0)
-				type = AsmInstrKey::Zero_Page;
-			else if (imm.length() == 0 && val.length() == 3 && opar.length() == 0 && cpar.length() == 0 && rel.length() == 0 && rega.length() == 0 && regxy.length() == 1)
-				type = (regxy.str() == "x" || regxy.str() == "X") ? AsmInstrKey::Zero_Page_X : AsmInstrKey::Zero_Page_Y;
-			else if (imm.length() == 0 && val.length() == 0 && opar.length() == 0 && cpar.length() == 0 && rel.length() > 0 && rega.length() == 0 && regxy.length() == 0)
-				type = AsmInstrKey::Relative;
+			} else if (outer.empty()) {
+				// Non-indirect forms; an index written here lands in the inner group.
+				if (abs) {
+					if (inner.empty())        type = AsmInstrKey::Absolute;
+					else if (inner == "X")    type = AsmInstrKey::Absolute_X;
+					else                      type = AsmInstrKey::Absolute_Y;
+				} else if (zp) {
+					if (inner.empty())        type = AsmInstrKey::Zero_Page;
+					else if (inner == "X")    type = AsmInstrKey::Zero_Page_X;
+					else                      type = AsmInstrKey::Zero_Page_Y;
+				}
+			}
 			AsmInstrKey key(uppercopy(instr.str()), type);
-			int parsedVal = val.length() == 0 ? 0 : (rel.length() == 0 ? strtoul(val.str().c_str() + 1, nullptr, 16) : atoi(val.str().c_str()));
+
+			// Hex operands are written $XX / $XXXX; branch displacements are
+			// signed decimal and live in their own capture group.
+			int parsedVal = 0;
+			if (val.length() > 0)
+				parsedVal = (int) strtoul(val.str().c_str() + 1, nullptr, 16);
+			else if (rel.length() > 0)
+				parsedVal = atoi(rel.str().c_str());
 			auto found = instruction_mapper.find(key);
 			auto end = instruction_mapper.end();
 			if (found == end)

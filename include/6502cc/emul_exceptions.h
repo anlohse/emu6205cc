@@ -5,14 +5,14 @@
  *      Author: alanl
  */
 
+#ifndef EMUL_EXCEPTIONS_H_
+#define EMUL_EXCEPTIONS_H_
+
 #include <exception>
 #include <string>
 
 /**
  * Base class for emulator exceptions: a std::exception carrying a message.
- *
- * @note This header has no include guard. It is currently included exactly
- * once (by asm.h), so nothing breaks, but adding a second include path will.
  */
 class emu_exception : public std::exception {
 private:
@@ -26,4 +26,5 @@ public:
 	}
 };
 
+#endif /* EMUL_EXCEPTIONS_H_ */
 

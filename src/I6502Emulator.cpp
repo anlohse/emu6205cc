@@ -31,11 +31,13 @@ void I6502Emulator::reset(bool run) {
 void I6502Emulator::start(bool run) {
 	memset((void*)m_regs,0,sizeof(Registers));
 	m_regs->sp = 0xfd;
-	m_regs->sr = FLAG__;
+	// Hardware leaves interrupts disabled after reset.
+	m_regs->sr = FLAG__ | FLAG_I;
 	m_regs->pc = m_bus->read(0xfffc) | (m_bus->read(0xfffd) << 8);
+	m_processor->clearInterrupts();
 	m_processor->p_clock->reset();
 	m_processor->p_clock->beginCycle();
-	m_processor->p_clock->waitCycles(8);
+	m_processor->p_clock->waitCycles(7);  // the reset sequence takes 7 cycles
 	if (run)
 		m_processor->run();
 }
