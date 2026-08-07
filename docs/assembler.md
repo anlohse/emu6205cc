@@ -3,7 +3,10 @@
 `Asm` (`include/6502cc/asm.h`) is a one-pass, regex-driven assembler meant for building
 small test programs in-line. It takes conventional 6502 operand syntax, but it is not a
 general-purpose assembler: there are no labels, directives or expressions, and hex
-literals have a strict width. For real programs use AS65 (bundled in `test/`) or ca65.
+literals have a strict width. For real programs use [ca65](https://cc65.github.io/) or
+AS65 (which ships inside Klaus Dormann's
+[test repository](https://github.com/Klaus2m5/6502_65C02_functional_tests) as
+`as65_142.zip`).
 
 Every behaviour below is covered by tests in `test_src/testAsm.cpp`.
 

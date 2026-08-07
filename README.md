@@ -30,7 +30,7 @@ include/6502cc/     public API headers
 src/                core implementation (Opcode.h, parameters.h, InstructionImpl.h are private)
 debugger_src/       Win32 GUI debugger + ncurses TUI debugger
 test_src/           doctest unit tests
-test/               Klaus Dormann functional test binary + AS65 assembler
+docs/               design, accuracy and porting notes
 ```
 
 ## Building
@@ -41,6 +41,25 @@ cmake -S . -B build && cmake --build build --config Release
 
 Targets: `emu6502_lib` (shared library), `emu6502_debugger`, `emu6502_test`.
 
+Configuring downloads two things: doctest, and Klaus Dormann's
+[6502_65C02_functional_tests](https://github.com/Klaus2m5/6502_65C02_functional_tests)
+for the conformance test. The latter is **GPL-3.0-or-later**, so it is fetched rather
+than vendored here — nothing from it is linked or compiled, the emulator just executes
+the prebuilt image as data.
+
+To build without network access, or to avoid downloading GPL content:
+
+```bash
+cmake -S . -B build -DEMU6502_FETCH_FUNCTIONAL_TESTS=OFF
+```
+
+The functional test then reports itself as skipped and everything else still runs. If
+you already have the image locally, point at it instead and keep the test:
+
+```bash
+cmake -S . -B build -DEMU6502_TEST_DATA_DIR=/path/to/bin_files
+```
+
 ### Running the tests
 
 ```bash
@@ -48,11 +67,10 @@ ctest --test-dir build -C Release --output-on-failure
 ```
 
 Or run the binary directly — `./build/Release/emu6502_test` on MSVC,
-`./build/emu6502_test` on single-config generators. It finds its data files through a
-compile definition, so any working directory works.
+`./build/emu6502_test` on single-config generators. The image location is baked in as
+an absolute path, so any working directory works.
 
-The functional test dominates the runtime (about 30 seconds in a Release build, much
-longer in Debug). To skip it while iterating:
+To skip the functional test while iterating:
 
 ```bash
 ./build/Release/emu6502_test -tce=functional_test_suite
@@ -60,8 +78,8 @@ longer in Debug). To skip it while iterating:
 
 ### Running the debugger
 
-The debugger loads `test/6502_functional_test.bin` from the **current working
-directory**, so launch it from the repository root.
+The debugger preloads the functional test image on startup if one was configured, so
+there is something to step through. Without it, it starts with zeroed memory.
 
 ## Quick start
 

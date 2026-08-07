@@ -102,6 +102,39 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(doctest)
 
 # ------------------------------------------------------------------------------
+# Klaus Dormann's 6502 functional test suite
+# ------------------------------------------------------------------------------
+# Downloaded at configure time rather than vendored: it is GPL-3.0-or-later,
+# and this repository does not want to take on redistribution obligations for
+# it. Nothing from it is linked or compiled -- the emulator only executes the
+# prebuilt image as data, which does not make this project a derivative work.
+#
+#   https://github.com/Klaus2m5/6502_65C02_functional_tests
+#   Copyright (C) 2012-2020 Klaus Dormann, GPL-3.0-or-later
+#
+# Turn EMU6502_FETCH_FUNCTIONAL_TESTS off to build without network access; the
+# functional test then reports itself as skipped instead of failing.
+option(EMU6502_FETCH_FUNCTIONAL_TESTS
+    "Download Klaus Dormann's 6502 functional tests (GPL-3.0) at configure time" ON)
+
+set(EMU6502_TEST_DATA_DIR "" CACHE PATH
+    "Directory containing 6502_functional_test.bin; overrides the download")
+
+if(EMU6502_FETCH_FUNCTIONAL_TESTS AND NOT EMU6502_TEST_DATA_DIR)
+    FetchContent_Declare(
+        klaus_6502_tests
+        GIT_REPOSITORY https://github.com/Klaus2m5/6502_65C02_functional_tests.git
+        # Pinned: the success-trap address asserted by testFunctional.cpp is a
+        # property of this exact build of the image.
+        GIT_TAG 7954e2dbb49c469ea286070bf46cdd71aeb29e4b
+    )
+    # The repository has no CMakeLists.txt, so this only populates the source
+    # directory -- add_subdirectory() is not called and nothing is built.
+    FetchContent_MakeAvailable(klaus_6502_tests)
+    set(EMU6502_TEST_DATA_DIR "${klaus_6502_tests_SOURCE_DIR}/bin_files")
+endif()
+
+# ------------------------------------------------------------------------------
 # Unit Tests
 # ------------------------------------------------------------------------------
 enable_testing()
@@ -118,10 +151,20 @@ add_executable(emu6502_test ${TEST_SOURCES})
 
 target_link_libraries(emu6502_test PRIVATE emu6502_lib doctest::doctest)
 
-# testFunctional locates test/6502_functional_test.bin relative to the source tree,
-# so the suite passes regardless of the working directory it is launched from.
-target_compile_definitions(emu6502_test PRIVATE
-    EMU6502_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test"
-)
+# Baked in as an absolute path so the suite passes from any working directory.
+# When it is empty, testFunctional.cpp reports the functional test as skipped.
+if(EMU6502_TEST_DATA_DIR)
+    target_compile_definitions(emu6502_test PRIVATE
+        EMU6502_TEST_DATA_DIR="${EMU6502_TEST_DATA_DIR}"
+    )
+    # The debuggers preload the same image on startup.
+    target_compile_definitions(emu6502_debugger PRIVATE
+        EMU6502_TEST_DATA_DIR="${EMU6502_TEST_DATA_DIR}"
+    )
+else()
+    message(STATUS
+        "6502 functional test not available; that test case will be skipped. "
+        "Enable EMU6502_FETCH_FUNCTIONAL_TESTS or set EMU6502_TEST_DATA_DIR.")
+endif()
 
 add_test(NAME emu6502_test COMMAND emu6502_test)

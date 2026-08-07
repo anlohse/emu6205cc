@@ -2,15 +2,27 @@
 
 ## Conformance against the functional test
 
-`test/6502_functional_test.bin` is Klaus Dormann's 6502 functional test, built here
-with `disable_decimal = 0` (decimal mode **is** tested) and `report = 0` (failures spin
-on a self-branch). It loads flat at `$0000`, starts at `$0400`, and reaches
-`JMP $3469` — a self-jump immediately followed by `JMP $0400` — on success.
+[Klaus Dormann's 6502 functional test](https://github.com/Klaus2m5/6502_65C02_functional_tests)
+is built with `disable_decimal = 0` (decimal mode **is** tested) and `report = 0`
+(failures spin on a self-branch). The image loads flat at `$0000` and is entered at
+`$0400` — the reset vector deliberately points at a trap handler, so PC is forced to
+the code segment as Klaus's readme describes. Success is the `JMP $3469` self-jump,
+immediately followed by `JMP $0400`.
 
-**It passes.** The run reaches `$3469` after 30,646,177 instructions. It is wired into
-the test suite as `functional_test_suite` (see `test_src/testFunctional.cpp`), so any
-regression in a documented opcode, addressing mode, flag or BCD operation fails the
-build.
+**It passes**, reaching `$3469` after exactly 30,646,177 instructions and 96,241,374
+cycles. It is wired into the suite as `functional_test_suite` (see
+`test_src/testFunctional.cpp`), so any regression in a documented opcode, addressing
+mode, flag or BCD operation fails the build.
+
+The image is GPL-3.0-or-later and is **not** vendored in this repository — CMake fetches
+it at configure time from a pinned revision. See `CMakeLists.txt`, or the build section
+of the [README](../README.md) for how to opt out or point at a local copy.
+
+Both totals above are asserted, not just the trap address. The cycle count is the more
+sensitive of the two: it exercises branch and page-crossing penalties across 30 million
+instructions, which no targeted test covers as thoroughly. Because it is pinned to that
+exact image, bumping the revision means re-deriving both constants from the failure
+message.
 
 ```bash
 cmake --build build --config Release && ./build/Release/emu6502_test
@@ -125,5 +137,6 @@ The duplicated `emu_Bus.h` / `emu_bus.h` include in `src/parameters.h` is gone; 
 includes now match the on-disk filenames, so the tree builds on a case-sensitive
 filesystem.
 
-Both debuggers still open `test/6502_functional_test.bin` by relative path and continue
-with zeroed memory if it is missing — launch them from the repository root.
+Both debuggers preload the functional test image on startup, using the same absolute
+path CMake supplies to the test suite. If no image was configured they start with zeroed
+memory instead.

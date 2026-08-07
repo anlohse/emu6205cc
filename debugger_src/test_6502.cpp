@@ -487,8 +487,14 @@ HWND createDebugWindow() {
 
 #define MIN(a,b) (a < b ? a : b)
 
+// Preload Klaus Dormann's functional test so there is something to step
+// through on startup. CMake supplies the directory; without it the debugger
+// simply starts with zeroed memory.
 void loadTestFile(Memory* mem) {
-	std::ifstream is("test/6502_functional_test.bin", std::ifstream::binary);
+#ifndef EMU6502_TEST_DATA_DIR
+	(void) mem;
+#else
+	std::ifstream is(EMU6502_TEST_DATA_DIR "/6502_functional_test.bin", std::ifstream::binary);
 	if (is) {
 		uint8 dest[0x10000];
 		is.seekg(0, is.end);
@@ -499,6 +505,7 @@ void loadTestFile(Memory* mem) {
 		is.close();
 		mem->write(dest, length, 0);
 	}
+#endif
 }
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
