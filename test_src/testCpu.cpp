@@ -558,6 +558,29 @@ TEST_CASE("kil_jams_the_processor") {
 /* Disassembler / processor agreement                                        */
 /* ----------------------------------------------------------------------- */
 
+TEST_CASE("disassembler_renders_operands") {
+	Rig r;
+	UnAsm un;
+	auto text = [&](std::initializer_list<int> bytes) {
+		r.poke(0x0400, bytes);
+		Registers probe = { };
+		probe.pc = 0x0400;
+		return un.unasm_line(&r.bus, &probe);
+	};
+
+	// Immediate must be distinguishable from zero page -- $A9 $10 is LDA #$10,
+	// while $A5 $10 loads from address $10.
+	CHECK_EQ(text({ 0xA9, 0x10 }), "LDA #$10");
+	CHECK_EQ(text({ 0xA5, 0x10 }), "LDA $10");
+	CHECK_EQ(text({ 0xA2, 0xFF }), "LDX #$ff");
+	CHECK_EQ(text({ 0xAD, 0x02, 0x20 }), "LDA $2002");
+	CHECK_EQ(text({ 0xA1, 0x20 }), "LDA ($20,X)");
+	CHECK_EQ(text({ 0xB1, 0x20 }), "LDA ($20),Y");
+	CHECK_EQ(text({ 0x6C, 0x34, 0x12 }), "JMP ($1234)");
+	CHECK_EQ(text({ 0x0A }), "ASL A");
+	CHECK_EQ(text({ 0xEA }), "NOP");
+}
+
 TEST_CASE("disassembler_lengths_match_execution") {
 	// For every opcode, the number of bytes the disassembler consumes must
 	// equal the number the processor consumes -- otherwise a debugger listing

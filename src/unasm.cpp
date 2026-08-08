@@ -75,11 +75,12 @@ string getZPgParams(Bus* _bus, uint16& at) {
 	return res.str();
 }
 
+/** Immediate operands carry a '#', which is what distinguishes LDA #$10 from LDA $10. */
 string getImmParams(Bus* _bus, uint16& at) {
 	uint8 data = _bus->read(at);
 	at++;
 	stringstream res;
-	res << "$" << setfill('0') << setw(2) << right << hex << (int)data;
+	res << "#$" << setfill('0') << setw(2) << right << hex << (int)data;
 	return res.str();
 }
 
