@@ -17,14 +17,33 @@
 #include <cstring>
 #include <initializer_list>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace {
+
+/**
+ * A plain Bus that also keeps a log of what it was asked to write.
+ *
+ * Most tests only care about the byte that ends up in memory. The
+ * read-modify-write tests care about the sequence, because an RMW writes twice
+ * and only the second write survives in memory -- the first is visible on the
+ * bus and nowhere else.
+ */
+struct LoggingBus : Bus {
+	std::vector<std::pair<uint16, uint8> > writes;
+
+	void write(uint16 address, uint8 val) override {
+		writes.push_back(std::make_pair(address, val));
+		Bus::write(address, val);
+	}
+};
 
 /** A CPU wired to 64 KB of zeroed RAM, with the reset vector at $0400. */
 struct Rig {
 	Registers regs;
 	Memory mem;
-	Bus bus;
+	LoggingBus bus;
 	default_clock clock;
 	Processor cpu;
 
@@ -335,6 +354,86 @@ TEST_CASE("bulk_transfers_are_clamped") {
 	std::memset(dst, 0, sizeof(dst));
 	mem.read(dst, sizeof(dst), 0);
 	CHECK_EQ(dst[0xFF], 0xAB);
+}
+
+/* ----------------------------------------------------------------------- */
+/* Read-modify-write bus traffic                                             */
+/* ----------------------------------------------------------------------- */
+
+/*
+ * A 6502 has no scratch register for the byte it is modifying, so an RMW
+ * instruction writes the unmodified value back and the result on the next
+ * cycle. On RAM the first write is undetectable; on a memory-mapped register it
+ * is the difference between one meaning and another, which is why these tests
+ * inspect the bus rather than memory.
+ */
+
+TEST_CASE("rmw_writes_the_old_value_before_the_new_one") {
+	Rig r;
+	r.put(0x8000, 0x41);
+	r.poke(0x0400, { 0xEE, 0x00, 0x80 });   // INC $8000
+	r.stepCycles();
+
+	REQUIRE_EQ(r.bus.writes.size(), 2);
+	CHECK_EQ(r.bus.writes[0].first, 0x8000);
+	CHECK_EQ(r.bus.writes[0].second, 0x41);   // what was already there
+	CHECK_EQ(r.bus.writes[1].first, 0x8000);
+	CHECK_EQ(r.bus.writes[1].second, 0x42);
+	CHECK_EQ(r.get(0x8000), 0x42);            // memory keeps only the last
+}
+
+TEST_CASE("every_rmw_opcode_writes_twice") {
+	struct Case { const char* name; int opcode; uint8 start; uint8 expect; };
+	const Case cases[] = {
+		{ "ASL", 0x0E, 0x21, 0x42 },
+		{ "ROL", 0x2E, 0x21, 0x42 },
+		{ "LSR", 0x4E, 0x42, 0x21 },
+		{ "ROR", 0x6E, 0x42, 0x21 },
+		{ "DEC", 0xCE, 0x43, 0x42 },
+		{ "INC", 0xEE, 0x41, 0x42 },
+		{ "SLO", 0x0F, 0x21, 0x42 },
+		{ "RLA", 0x2F, 0x21, 0x42 },
+		{ "SRE", 0x4F, 0x42, 0x21 },
+		{ "RRA", 0x6F, 0x42, 0x21 },
+		{ "DCP", 0xCF, 0x43, 0x42 },
+		{ "ISC", 0xEF, 0x41, 0x42 },
+	};
+
+	for (const Case& c : cases) {
+		CAPTURE(c.name);
+		Rig r;
+		r.put(0x8000, c.start);
+		r.poke(0x0400, { c.opcode, 0x00, 0x80 });
+		r.stepCycles();
+
+		REQUIRE_EQ(r.bus.writes.size(), 2);
+		CHECK_EQ(r.bus.writes[0].second, c.start);
+		CHECK_EQ(r.bus.writes[1].second, c.expect);
+	}
+}
+
+TEST_CASE("the_dummy_write_costs_no_extra_cycles") {
+	// It was always paid for -- the bus cycle existed, nothing was driven onto
+	// it. Charging for it again would break every timing test downstream.
+	Rig r;
+	r.poke(0x0400, { 0xEE, 0x00, 0x80 });   // INC $8000, absolute
+	CHECK_EQ(r.stepCycles(), 6);
+
+	Rig z;
+	z.poke(0x0400, { 0xE6, 0x80 });         // INC $80, zero page
+	CHECK_EQ(z.stepCycles(), 5);
+}
+
+TEST_CASE("accumulator_mode_never_reaches_the_bus") {
+	// ASL A modifies a register. There is no address to write twice to, and
+	// hardware makes no bus access at all.
+	Rig r;
+	r.regs.a = 0x21;
+	r.poke(0x0400, { 0x0A });               // ASL A
+	r.stepCycles();
+
+	CHECK_EQ(r.regs.a, 0x42);
+	CHECK(r.bus.writes.empty());
 }
 
 /* ----------------------------------------------------------------------- */
