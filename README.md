@@ -139,6 +139,12 @@ before writing source for it.
 - [docs/assembler.md](docs/assembler.md) — the built-in assembler/disassembler grammar and its limits
 - [docs/nes-roadmap.md](docs/nes-roadmap.md) — what this core needs before it can host a NES
 
-## License
+## Licence
 
-Copyright Alan N. Lohse, 2021.
+MIT — see [LICENSE](LICENSE). Copyright Alan N. Lohse, 2021-2026.
+
+Klaus Dormann's `6502_functional_test` is **GPL-3.0-or-later** and is not part of this
+repository. CMake fetches it at configure time into the build directory and it is only
+ever read as test data, so nothing here is a derivative work of it and its copyleft does
+not reach this code. Building with `-DEMU6502_FETCH_FUNCTIONAL_TESTS=OFF` skips the
+download entirely, and that test then reports itself as skipped.
