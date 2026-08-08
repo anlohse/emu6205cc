@@ -80,6 +80,28 @@ inline void cmpCore(Registers *regs, uint8 reg, uint8 val) {
 }
 
 /**
+ * Store the result of a read-modify-write instruction.
+ *
+ * A 6502 has nowhere to park the byte while the ALU works on it, so it writes
+ * the *unmodified* value straight back to the same address and the new one on
+ * the very next cycle. Against RAM the first write is invisible -- it puts back
+ * what was already there. Against a hardware register it is not: the device
+ * sees two writes, one cycle apart, and what it does with them is its own
+ * business. MMC1 keeps the first and ignores the second.
+ *
+ * Cycle counts do not move. That extra bus cycle was always part of what an RMW
+ * costs; only now is anything actually driven onto the bus during it.
+ *
+ * Accumulator mode passes through here too, where both stores land on A rather
+ * than on the bus and the first is a self-assignment.
+ */
+template<class IParams>
+inline void rmwStore(IParams& params, Registers *regs, Bus *bus, uint8 orig, uint8 val) {
+	params.set8bit(regs, bus, orig);
+	params.set8bit(regs, bus, val);
+}
+
+/**
  * Conditional branch.
  *
  * Costs the base count, plus one cycle if the branch is taken, plus one more if
@@ -135,11 +157,11 @@ public:
 	virtual int execute(Registers *regs, Bus *bus) {
 		IParams params;
 		params.init(regs, bus);
-		uint8 val = params.get8bit(regs, bus);
-		regs->setStatus(FLAG_C, (val & 0x80) != 0);
-		val <<= 1;
+		uint8 orig = params.get8bit(regs, bus);
+		uint8 val = orig << 1;
+		regs->setStatus(FLAG_C, (orig & 0x80) != 0);
 		setNZ(regs, val);
-		params.set8bit(regs, bus, val);
+		rmwStore(params, regs, bus, orig, val);
 		return cycles;
 	}
 };
@@ -310,8 +332,9 @@ public:
 	virtual int execute(Registers *regs, Bus *bus) {
 		IParams params;
 		params.init(regs, bus);
-		uint8 val = params.get8bit(regs, bus) - 1;
-		params.set8bit(regs, bus, val);
+		uint8 orig = params.get8bit(regs, bus);
+		uint8 val = orig - 1;
+		rmwStore(params, regs, bus, orig, val);
 		setNZ(regs, val);
 		return cycles;
 	}
@@ -355,8 +378,9 @@ public:
 	virtual int execute(Registers *regs, Bus *bus) {
 		IParams params;
 		params.init(regs, bus);
-		uint8 val = params.get8bit(regs, bus) + 1;
-		params.set8bit(regs, bus, val);
+		uint8 orig = params.get8bit(regs, bus);
+		uint8 val = orig + 1;
+		rmwStore(params, regs, bus, orig, val);
 		setNZ(regs, val);
 		return cycles;
 	}
@@ -448,11 +472,11 @@ public:
 	virtual int execute(Registers *regs, Bus *bus) {
 		IParams params;
 		params.init(regs, bus);
-		uint8 val = params.get8bit(regs, bus);
-		regs->setStatus(FLAG_C, (val & 0x01) != 0);
-		val >>= 1;
+		uint8 orig = params.get8bit(regs, bus);
+		uint8 val = orig >> 1;
+		regs->setStatus(FLAG_C, (orig & 0x01) != 0);
 		setNZ(regs, val);
-		params.set8bit(regs, bus, val);
+		rmwStore(params, regs, bus, orig, val);
 		return cycles;
 	}
 };
@@ -546,7 +570,7 @@ public:
 		uint8 val = (old << 1) | (regs->getStatus(FLAG_C) ? 1 : 0);
 		regs->setStatus(FLAG_C, (old & 0x80) != 0);
 		setNZ(regs, val);
-		params.set8bit(regs, bus, val);
+		rmwStore(params, regs, bus, old, val);
 		return cycles;
 	}
 };
@@ -561,7 +585,7 @@ public:
 		uint8 val = (old >> 1) | (regs->getStatus(FLAG_C) ? 0x80 : 0);
 		regs->setStatus(FLAG_C, (old & 0x01) != 0);
 		setNZ(regs, val);
-		params.set8bit(regs, bus, val);
+		rmwStore(params, regs, bus, old, val);
 		return cycles;
 	}
 };
@@ -754,8 +778,9 @@ public:
 	virtual int execute(Registers *regs, Bus *bus) {
 		IParams params;
 		params.init(regs, bus);
-		uint8 val = params.get8bit(regs, bus) - 1;
-		params.set8bit(regs, bus, val);
+		uint8 orig = params.get8bit(regs, bus);
+		uint8 val = orig - 1;
+		rmwStore(params, regs, bus, orig, val);
 		cmpCore(regs, regs->a, val);
 		return cycles;
 	}
@@ -768,8 +793,9 @@ public:
 	virtual int execute(Registers *regs, Bus *bus) {
 		IParams params;
 		params.init(regs, bus);
-		uint8 val = params.get8bit(regs, bus) + 1;
-		params.set8bit(regs, bus, val);
+		uint8 orig = params.get8bit(regs, bus);
+		uint8 val = orig + 1;
+		rmwStore(params, regs, bus, orig, val);
 		sbcCore(regs, val);
 		return cycles;
 	}
@@ -782,10 +808,10 @@ public:
 	virtual int execute(Registers *regs, Bus *bus) {
 		IParams params;
 		params.init(regs, bus);
-		uint8 val = params.get8bit(regs, bus);
-		regs->setStatus(FLAG_C, (val & 0x80) != 0);
-		val <<= 1;
-		params.set8bit(regs, bus, val);
+		uint8 orig = params.get8bit(regs, bus);
+		uint8 val = orig << 1;
+		regs->setStatus(FLAG_C, (orig & 0x80) != 0);
+		rmwStore(params, regs, bus, orig, val);
 		regs->a |= val;
 		setNZ(regs, regs->a);
 		return cycles;
@@ -802,7 +828,7 @@ public:
 		uint8 old = params.get8bit(regs, bus);
 		uint8 val = (old << 1) | (regs->getStatus(FLAG_C) ? 1 : 0);
 		regs->setStatus(FLAG_C, (old & 0x80) != 0);
-		params.set8bit(regs, bus, val);
+		rmwStore(params, regs, bus, old, val);
 		regs->a &= val;
 		setNZ(regs, regs->a);
 		return cycles;
@@ -816,10 +842,10 @@ public:
 	virtual int execute(Registers *regs, Bus *bus) {
 		IParams params;
 		params.init(regs, bus);
-		uint8 val = params.get8bit(regs, bus);
-		regs->setStatus(FLAG_C, (val & 0x01) != 0);
-		val >>= 1;
-		params.set8bit(regs, bus, val);
+		uint8 orig = params.get8bit(regs, bus);
+		uint8 val = orig >> 1;
+		regs->setStatus(FLAG_C, (orig & 0x01) != 0);
+		rmwStore(params, regs, bus, orig, val);
 		regs->a ^= val;
 		setNZ(regs, regs->a);
 		return cycles;
@@ -836,7 +862,7 @@ public:
 		uint8 old = params.get8bit(regs, bus);
 		uint8 val = (old >> 1) | (regs->getStatus(FLAG_C) ? 0x80 : 0);
 		regs->setStatus(FLAG_C, (old & 0x01) != 0);
-		params.set8bit(regs, bus, val);
+		rmwStore(params, regs, bus, old, val);
 		adcCore(regs, val);
 		return cycles;
 	}

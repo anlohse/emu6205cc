@@ -56,14 +56,20 @@ a scanline-accurate NES; they are listed so you know where the edges are.
 to the clock. Bus accesses within an instruction therefore all appear to happen at
 once. Consequences:
 
-- Read-modify-write instructions (`INC`, `ASL abs,X`, and the undocumented RMW family)
-  do not perform the hardware's extra dummy write of the unmodified value. A few NES
-  titles use that write to acknowledge an interrupt register.
 - Indexed reads that cross a page do not perform the dummy read of the un-carried
   address.
 - The cycle count is correct in total, but not in distribution.
 
-Fixing this does not require restructuring `Processor` — because every instruction
+Read-modify-write instructions are the exception, and worth spelling out. They *do*
+perform both of hardware's writes — the unmodified byte and then the result, in that
+order, through `rmwStore()` in `InstructionImpl.h`. Against RAM the first is invisible;
+against a memory-mapped register it is not, and a device that latches on write sees
+both. What a device cannot tell from here is that they were one cycle apart rather than
+simultaneous. Anything that needs to know can be told where instructions begin — which
+is what the NES cartridge layer does to reproduce MMC1's rule that the second write of
+such a pair is ignored.
+
+Fixing the rest does not require restructuring `Processor` — because every instruction
 funnels its memory access through `Bus`, making `Bus::read`/`write` tick a co-processor
 gives cycle-level timing directly. See [nes-roadmap.md](nes-roadmap.md).
 

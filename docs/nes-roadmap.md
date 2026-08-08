@@ -87,9 +87,9 @@ every memory access through the bus — a genuinely nice property of the current
 What you lose is the ability to count cycles from the clock delta, since the ticking
 happens inside the access.
 
-Note that read-modify-write instructions do not perform the hardware's dummy write, and
-indexed reads that cross a page do not perform the dummy read. Those matter for a
-handful of titles, not most. See [accuracy.md](accuracy.md#instruction-stepped-not-cycle-stepped).
+Note that indexed reads which cross a page do not perform the hardware's dummy read.
+That matters for a handful of titles, not most. See
+[accuracy.md](accuracy.md#instruction-stepped-not-cycle-stepped).
 
 ## 4. Disable decimal mode
 
