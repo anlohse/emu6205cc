@@ -314,12 +314,25 @@ struct IndirectParams : ParamsBase {
  */
 struct IndirectXParams : ParamsBase {
 	uint8 data;
+	// Resolving the pointer costs two bus reads, and hardware pays for them
+	// once. Instructions that both read and write -- the RMW family -- ask for
+	// the address more than once, so without this the same fetch would be
+	// issued again and the instruction would make more accesses than it has
+	// cycles to make them in.
+	bool m_resolved;
+	uint16 m_addr;
+	IndirectXParams() : m_resolved(false), m_addr(0) { }
+
 	void init(Registers* regs, Bus* bus) {
 		data = bus->read(regs->pc++);
 	}
 	uint16 addr(Registers* regs, Bus* bus) {
-		uint8 zp = data + regs->x;
-		return ZP_READ16(bus, zp);
+		if (!m_resolved) {
+			uint8 zp = data + regs->x;
+			m_addr = ZP_READ16(bus, zp);
+			m_resolved = true;
+		}
+		return m_addr;
 	}
 	uint8 get8bit(Registers* regs, Bus* bus) {
 		return bus->read(addr(regs, bus));
@@ -345,12 +358,23 @@ struct IndirectXParams : ParamsBase {
  */
 struct IndirectYParams : ParamsBase {
 	uint8 data;
+	// As above: the pointer is fetched once per instruction, not once per
+	// request for it. The SHx family asks for the base and the indexed address
+	// separately, so both are memoised rather than just the second.
+	bool m_baseResolved;
+	uint16 m_base;
+	IndirectYParams() : m_baseResolved(false), m_base(0) { }
+
 	void init(Registers* regs, Bus* bus) {
 		data = bus->read(regs->pc++);
 	}
 	/** Pointer value before Y is added -- needed by the SHx family. */
 	uint16 base(Registers* regs, Bus* bus) {
-		return ZP_READ16(bus, data);
+		if (!m_baseResolved) {
+			m_base = ZP_READ16(bus, data);
+			m_baseResolved = true;
+		}
+		return m_base;
 	}
 	uint16 addr(Registers* regs, Bus* bus) {
 		uint16 ptr = base(regs, bus);

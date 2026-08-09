@@ -71,7 +71,15 @@ such a pair is ignored.
 
 Fixing the rest does not require restructuring `Processor` — because every instruction
 funnels its memory access through `Bus`, making `Bus::read`/`write` tick a co-processor
-gives cycle-level timing directly. See [nes-roadmap.md](nes-roadmap.md).
+gives cycle-level timing directly. The NES front-end does exactly this, and it works:
+`NesBus` advances the PPU and APU one cycle before serving each access and settles the
+remainder when the instruction ends. See [nes-roadmap.md](nes-roadmap.md).
+
+A host doing that relies on one property of this core: **an instruction never makes more
+bus accesses than it has cycles**, so the host can charge a cycle per access and know the
+balance owed is never negative. A test over all 256 opcodes pins it. The addressing modes
+memoise a resolved indirect address for the same reason — hardware fetches a pointer
+once, and re-fetching it would issue accesses the instruction has no cycles to spend.
 
 ### Interrupts are polled at instruction boundaries
 

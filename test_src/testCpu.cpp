@@ -32,8 +32,15 @@ namespace {
  */
 struct LoggingBus : Bus {
 	std::vector<std::pair<uint16, uint8> > writes;
+	int accesses = 0;
+
+	uint8 read(uint16 address) override {
+		accesses++;
+		return Bus::read(address);
+	}
 
 	void write(uint16 address, uint8 val) override {
+		accesses++;
 		writes.push_back(std::make_pair(address, val));
 		Bus::write(address, val);
 	}
@@ -422,6 +429,26 @@ TEST_CASE("the_dummy_write_costs_no_extra_cycles") {
 	Rig z;
 	z.poke(0x0400, { 0xE6, 0x80 });         // INC $80, zero page
 	CHECK_EQ(z.stepCycles(), 5);
+}
+
+TEST_CASE("no_instruction_makes_more_accesses_than_it_has_cycles") {
+	// A host that advances its co-processors once per bus access relies on this:
+	// it charges a cycle for each access and settles the difference at the end
+	// of the instruction, which only works while accesses are the smaller
+	// number. An addressing mode that re-fetched a pointer it had already
+	// resolved would break it, and did.
+	for (int op = 0; op < 256; op++) {
+		CAPTURE(op);
+		Rig r;
+		r.regs.x = 0x04;
+		r.regs.y = 0x05;
+		r.poke(0x0400, { op, 0x20, 0x30 });
+		r.poke(0x0020, { 0x00, 0x02 });    // pointer for (zp),Y
+		r.poke(0x0024, { 0x80, 0x02 });    // pointer for (zp,X)
+
+		const int cycles = r.stepCycles();
+		CHECK_LE(r.bus.accesses, cycles);
+	}
 }
 
 TEST_CASE("accumulator_mode_never_reaches_the_bus") {
