@@ -83,15 +83,29 @@ once, and re-fetching it would issue accesses the instruction has no cycles to s
 
 ### Interrupts are polled at instruction boundaries
 
-Real hardware samples the interrupt lines partway through an instruction, which
-produces two observable effects this core does not reproduce:
+Real hardware samples the interrupt lines partway through an instruction. The core
+polls between instructions, which is enough for one of the observable consequences and
+not for the rest.
 
-- **Delayed flag effect.** `CLI`, `SEI` and `PLP` change `I` one instruction later than
-  you would expect, so an IRQ can slip in immediately after `SEI`.
-- **BRK hijacking.** An NMI asserted during a `BRK` sequence takes over the vector
-  while keeping `BRK`'s pushed state.
+**Done: the delayed flag effect.** `CLI`, `SEI` and `PLP` write `I` in their own final
+cycle, which is *after* the point where the CPU has already decided whether to take an
+interrupt at that boundary — so the change is felt one instruction later. An IRQ pending
+across `CLI; SEI` is therefore taken exactly once, just after the `SEI`. `RTI` is not
+like that: it restores `I` early enough to be felt immediately, and an IRQ follows it at
+once. `Processor` tracks the delay itself rather than shadowing the flag, so a debugger
+writing `I` directly is still obeyed on the spot. Verified against blargg's
+`cpu_interrupts_v2/1-cli_latency`.
 
-Both are edge cases that essentially no software depends on.
+**Not done**, and all needing a poll *within* an instruction rather than between them:
+
+- **BRK hijacking.** An NMI asserted during a `BRK` sequence takes over the vector while
+  keeping `BRK`'s pushed state.
+- **Branches move the poll.** A taken branch samples the lines a cycle later than a
+  straight-line instruction does.
+- **An IRQ landing inside a DMA** is timed against the stolen cycles.
+
+Reaching those means charging an instruction's cycles as they pass rather than in one
+lump at the end, which is a real piece of work on this core rather than a patch.
 
 ### Unstable undocumented opcodes are approximated
 
