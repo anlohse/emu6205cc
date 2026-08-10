@@ -157,6 +157,7 @@ public:
 	virtual int execute(Registers *regs, Bus *bus) {
 		IParams params;
 		params.init(regs, bus);
+		params.dummyRead(regs, bus);
 		uint8 orig = params.get8bit(regs, bus);
 		uint8 val = orig << 1;
 		regs->setStatus(FLAG_C, (orig & 0x80) != 0);
@@ -332,6 +333,7 @@ public:
 	virtual int execute(Registers *regs, Bus *bus) {
 		IParams params;
 		params.init(regs, bus);
+		params.dummyRead(regs, bus);
 		uint8 orig = params.get8bit(regs, bus);
 		uint8 val = orig - 1;
 		rmwStore(params, regs, bus, orig, val);
@@ -378,6 +380,7 @@ public:
 	virtual int execute(Registers *regs, Bus *bus) {
 		IParams params;
 		params.init(regs, bus);
+		params.dummyRead(regs, bus);
 		uint8 orig = params.get8bit(regs, bus);
 		uint8 val = orig + 1;
 		rmwStore(params, regs, bus, orig, val);
@@ -472,6 +475,7 @@ public:
 	virtual int execute(Registers *regs, Bus *bus) {
 		IParams params;
 		params.init(regs, bus);
+		params.dummyRead(regs, bus);
 		uint8 orig = params.get8bit(regs, bus);
 		uint8 val = orig >> 1;
 		regs->setStatus(FLAG_C, (orig & 0x01) != 0);
@@ -566,6 +570,7 @@ public:
 	virtual int execute(Registers *regs, Bus *bus) {
 		IParams params;
 		params.init(regs, bus);
+		params.dummyRead(regs, bus);
 		uint8 old = params.get8bit(regs, bus);
 		uint8 val = (old << 1) | (regs->getStatus(FLAG_C) ? 1 : 0);
 		regs->setStatus(FLAG_C, (old & 0x80) != 0);
@@ -581,6 +586,7 @@ public:
 	virtual int execute(Registers *regs, Bus *bus) {
 		IParams params;
 		params.init(regs, bus);
+		params.dummyRead(regs, bus);
 		uint8 old = params.get8bit(regs, bus);
 		uint8 val = (old >> 1) | (regs->getStatus(FLAG_C) ? 0x80 : 0);
 		regs->setStatus(FLAG_C, (old & 0x01) != 0);
@@ -653,6 +659,9 @@ public:
 	virtual int execute(Registers *regs, Bus *bus) {
 		IParams params;
 		params.init(regs, bus);
+		// A store always spends the indexing cycle, and always drives the bus
+		// with the half-finished address while it does.
+		params.dummyRead(regs, bus);
 		params.set8bit(regs, bus, regs->a);
 		return cycles;
 	}
@@ -664,6 +673,9 @@ public:
 	virtual int execute(Registers *regs, Bus *bus) {
 		IParams params;
 		params.init(regs, bus);
+		// A store always spends the indexing cycle, and always drives the bus
+		// with the half-finished address while it does.
+		params.dummyRead(regs, bus);
 		params.set8bit(regs, bus, regs->x);
 		return cycles;
 	}
@@ -675,6 +687,9 @@ public:
 	virtual int execute(Registers *regs, Bus *bus) {
 		IParams params;
 		params.init(regs, bus);
+		// A store always spends the indexing cycle, and always drives the bus
+		// with the half-finished address while it does.
+		params.dummyRead(regs, bus);
 		params.set8bit(regs, bus, regs->y);
 		return cycles;
 	}
@@ -766,6 +781,9 @@ public:
 	virtual int execute(Registers *regs, Bus *bus) {
 		IParams params;
 		params.init(regs, bus);
+		// A store always spends the indexing cycle, and always drives the bus
+		// with the half-finished address while it does.
+		params.dummyRead(regs, bus);
 		params.set8bit(regs, bus, regs->a & regs->x);
 		return cycles;
 	}
@@ -778,6 +796,7 @@ public:
 	virtual int execute(Registers *regs, Bus *bus) {
 		IParams params;
 		params.init(regs, bus);
+		params.dummyRead(regs, bus);
 		uint8 orig = params.get8bit(regs, bus);
 		uint8 val = orig - 1;
 		rmwStore(params, regs, bus, orig, val);
@@ -793,6 +812,7 @@ public:
 	virtual int execute(Registers *regs, Bus *bus) {
 		IParams params;
 		params.init(regs, bus);
+		params.dummyRead(regs, bus);
 		uint8 orig = params.get8bit(regs, bus);
 		uint8 val = orig + 1;
 		rmwStore(params, regs, bus, orig, val);
@@ -808,6 +828,7 @@ public:
 	virtual int execute(Registers *regs, Bus *bus) {
 		IParams params;
 		params.init(regs, bus);
+		params.dummyRead(regs, bus);
 		uint8 orig = params.get8bit(regs, bus);
 		uint8 val = orig << 1;
 		regs->setStatus(FLAG_C, (orig & 0x80) != 0);
@@ -825,6 +846,7 @@ public:
 	virtual int execute(Registers *regs, Bus *bus) {
 		IParams params;
 		params.init(regs, bus);
+		params.dummyRead(regs, bus);
 		uint8 old = params.get8bit(regs, bus);
 		uint8 val = (old << 1) | (regs->getStatus(FLAG_C) ? 1 : 0);
 		regs->setStatus(FLAG_C, (old & 0x80) != 0);
@@ -842,6 +864,7 @@ public:
 	virtual int execute(Registers *regs, Bus *bus) {
 		IParams params;
 		params.init(regs, bus);
+		params.dummyRead(regs, bus);
 		uint8 orig = params.get8bit(regs, bus);
 		uint8 val = orig >> 1;
 		regs->setStatus(FLAG_C, (orig & 0x01) != 0);
@@ -859,6 +882,7 @@ public:
 	virtual int execute(Registers *regs, Bus *bus) {
 		IParams params;
 		params.init(regs, bus);
+		params.dummyRead(regs, bus);
 		uint8 old = params.get8bit(regs, bus);
 		uint8 val = (old >> 1) | (regs->getStatus(FLAG_C) ? 0x80 : 0);
 		regs->setStatus(FLAG_C, (old & 0x01) != 0);

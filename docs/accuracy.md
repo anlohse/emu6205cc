@@ -56,9 +56,12 @@ a scanline-accurate NES; they are listed so you know where the edges are.
 to the clock. Bus accesses within an instruction therefore all appear to happen at
 once. Consequences:
 
-- Indexed reads that cross a page do not perform the dummy read of the un-carried
-  address.
-- The cycle count is correct in total, but not in distribution.
+- The cycle count is correct in total, but not in distribution: the cycles an
+  instruction spends without touching the bus are settled at its end rather than where
+  they belong. That is what stops interrupts being polled partway through one.
+
+The dummy reads are no longer among the consequences — see below — which narrows this
+to the genuinely internal cycles.
 
 Read-modify-write instructions are the exception, and worth spelling out. They *do*
 perform both of hardware's writes — the unmodified byte and then the result, in that
@@ -83,15 +86,47 @@ once, and re-fetching it would issue accesses the instruction has no cycles to s
 
 ### Interrupts are polled at instruction boundaries
 
-Real hardware samples the interrupt lines partway through an instruction, which
-produces two observable effects this core does not reproduce:
+Real hardware samples the interrupt lines partway through an instruction. The core
+polls between instructions, which is enough for one of the observable consequences and
+not for the rest.
 
-- **Delayed flag effect.** `CLI`, `SEI` and `PLP` change `I` one instruction later than
-  you would expect, so an IRQ can slip in immediately after `SEI`.
-- **BRK hijacking.** An NMI asserted during a `BRK` sequence takes over the vector
-  while keeping `BRK`'s pushed state.
+**Done: the delayed flag effect.** `CLI`, `SEI` and `PLP` write `I` in their own final
+cycle, which is *after* the point where the CPU has already decided whether to take an
+interrupt at that boundary — so the change is felt one instruction later. An IRQ pending
+across `CLI; SEI` is therefore taken exactly once, just after the `SEI`. `RTI` is not
+like that: it restores `I` early enough to be felt immediately, and an IRQ follows it at
+once. `Processor` tracks the delay itself rather than shadowing the flag, so a debugger
+writing `I` directly is still obeyed on the spot. Verified against blargg's
+`cpu_interrupts_v2/1-cli_latency`.
 
-Both are edge cases that essentially no software depends on.
+### Dummy reads
+
+A 6502 has no idle cycles. It drives the bus on every one of them, so the cycle an
+indexed mode spends adding the index is a real read of a real address — usually the one
+with the carry into the high byte not yet applied. Nothing notices against RAM; against
+`$2007` or `$4015`, where reading has consequences, it is the difference between a game
+working and not.
+
+The core makes those reads now: a read makes one when the index carries into a new page,
+while a store or a read-modify-write makes one every time, which is why `STA abs,X`
+costs five cycles whether or not it crosses a page. Zero-page indexed modes read the
+un-indexed address, which is what their adding cycle really does. Verified against
+blargg's `instr_misc/03-dummy_reads`.
+
+What is still missing is the same read on the `SHx` family (`$9C`, `$9E`, `$93`, `$9F`,
+`$9B`), whose behaviour on a page cross is unstable on real silicon and not modelled
+here at all.
+
+**Not done**, and all needing a poll *within* an instruction rather than between them:
+
+- **BRK hijacking.** An NMI asserted during a `BRK` sequence takes over the vector while
+  keeping `BRK`'s pushed state.
+- **Branches move the poll.** A taken branch samples the lines a cycle later than a
+  straight-line instruction does.
+- **An IRQ landing inside a DMA** is timed against the stolen cycles.
+
+Reaching those means charging an instruction's cycles as they pass rather than in one
+lump at the end, which is a real piece of work on this core rather than a patch.
 
 ### Unstable undocumented opcodes are approximated
 

@@ -57,6 +57,20 @@ protected:
 	std::atomic<bool> m_stopping;
 	std::atomic<bool> m_nmi_pending;  //!< Edge-triggered: latched until serviced.
 	std::atomic<bool> m_irq_line;     //!< Level-triggered: held while a device asserts it.
+	/**
+	 * Whether the last instruction changed I too late to be polled.
+	 *
+	 * CLI, SEI and PLP write I in their own final cycle, which is after the
+	 * point where the CPU has already decided whether to service an interrupt
+	 * at that boundary -- so their change is felt one instruction later. Every
+	 * other instruction, RTI included, is in time.
+	 *
+	 * Only the delay is tracked, not a shadow copy of the flag, so that a
+	 * debugger or a test writing I directly is obeyed at once rather than an
+	 * instruction later.
+	 */
+	bool m_i_flag_delayed;
+	bool m_i_flag_before;   //!< What I was before that instruction.
 	InstructionCallBackType p_instr_callback;
 
 	/**

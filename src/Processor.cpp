@@ -3,7 +3,8 @@
 #include "InstructionImpl.h"
 
 Processor::Processor(Bus* _bus, Registers* _regs, emu_clock* _clock): p_bus(_bus), p_regs(_regs), p_clock(_clock),
-		m_running(false), m_stopping(false), m_nmi_pending(false), m_irq_line(false), p_instr_callback(nullptr) {
+		m_running(false), m_stopping(false), m_nmi_pending(false), m_irq_line(false),
+		m_i_flag_delayed(false), m_i_flag_before(true), p_instr_callback(nullptr) {
 }
 
 Processor::~Processor() {
@@ -319,15 +320,34 @@ int Processor::serviceInterrupt(uint16 vector) {
 void Processor::step() {
 	// NMI is edge-triggered and ignores the I flag; IRQ is level-triggered and
 	// gated by it. Both are serviced in place of the next instruction.
+	//
+	// The gate is m_polled_i_flag rather than the flag itself, because the CPU
+	// decides this a cycle before the instruction ends. CLI, SEI and PLP write
+	// I in that final cycle, so their change is felt one instruction later --
+	// "CLI; SEI" with an interrupt pending takes exactly one, just after the
+	// SEI, which is the behaviour blargg's 1-cli_latency is built to pin down.
+	const bool masked = m_i_flag_delayed
+			? m_i_flag_before : p_regs->getStatus(FLAG_I);
+
 	if (m_nmi_pending.exchange(false)) {
 		p_clock->waitCycles(serviceInterrupt(0xFFFA));
-	} else if (m_irq_line.load() && !p_regs->getStatus(FLAG_I)) {
+		m_i_flag_delayed = false;                // the sequence sets I itself
+	} else if (m_irq_line.load() && !masked) {
 		p_clock->waitCycles(serviceInterrupt(0xFFFE));
+		m_i_flag_delayed = false;
 	} else {
 		int code = p_bus->read(p_regs->pc++);
+		const bool before = p_regs->getStatus(FLAG_I);
 		BaseInstruction* p_instr = _instruction_table[code];
 		int cycles = p_instr->execute(p_regs, p_bus);
 		p_clock->waitCycles(cycles);
+
+		// CLI, SEI, PLP: too late to be polled, so the next boundary is decided
+		// on what I was before them. Everything else -- RTI included, which
+		// restores I early enough that an interrupt is taken the moment it
+		// returns -- is in time, and the flag speaks for itself.
+		m_i_flag_delayed = (code == 0x58 || code == 0x78 || code == 0x28);
+		m_i_flag_before = before;
 	}
 	if (p_instr_callback) p_instr_callback();
 }
@@ -363,6 +383,8 @@ bool Processor::irqAsserted() const {
 void Processor::clearInterrupts() {
 	m_nmi_pending = false;
 	m_irq_line = false;
+	// Whatever CLI or PLP was in flight is gone with everything else.
+	m_i_flag_delayed = false;
 }
 
 void Processor::setInstructionCallback(const InstructionCallBackType& _instr_callback) {
