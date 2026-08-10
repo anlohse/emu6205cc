@@ -56,9 +56,12 @@ a scanline-accurate NES; they are listed so you know where the edges are.
 to the clock. Bus accesses within an instruction therefore all appear to happen at
 once. Consequences:
 
-- Indexed reads that cross a page do not perform the dummy read of the un-carried
-  address.
-- The cycle count is correct in total, but not in distribution.
+- The cycle count is correct in total, but not in distribution: the cycles an
+  instruction spends without touching the bus are settled at its end rather than where
+  they belong. That is what stops interrupts being polled partway through one.
+
+The dummy reads are no longer among the consequences — see below — which narrows this
+to the genuinely internal cycles.
 
 Read-modify-write instructions are the exception, and worth spelling out. They *do*
 perform both of hardware's writes — the unmodified byte and then the result, in that
