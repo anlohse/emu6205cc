@@ -119,11 +119,22 @@ these six.
 genuinely strange and is not modelled — irrelevant on a 2A03, which has decimal
 disabled.
 
-### Decimal mode is always available
+### Decimal mode is switchable
 
-`ADC`/`SBC` honour the `D` flag. The NES's 2A03 has decimal mode fused off, so a NES
-port needs a switch to disable it. This is the one place the core does *more* than that
-target hardware rather than less.
+`ADC`/`SBC` honour the `D` flag, as an NMOS 6502 does. The NES's 2A03 is the same core
+with the decimal circuitry left off the die, so `Registers::decimalDisabled` turns it
+off: `SED` still sets the bit, `PHP` still reports it, and the arithmetic ignores it.
+A 2A03 host sets that once and forgets it.
+
+It is phrased as a *disable* rather than the more natural `decimalMode = true` for a
+reason worth keeping. Several places — `I6502Emulator::start()` among them — reset a
+`Registers` with `memset`, and the first version of this flag defaulted to enabled;
+every one of those memsets silently turned the core into a 2A03 and Klaus Dormann's
+decimal tests failed on the spot. A flag whose zero value is the safe one cannot be
+broken that way.
+
+Found by blargg's `instr_test-v5`, which failed seven of its sixteen ROMs on this
+alone — every failing opcode was `ADC`, `SBC`, `RRA` or `ISC`.
 
 ### Memory mirrors rather than faulting
 

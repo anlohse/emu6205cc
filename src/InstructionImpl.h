@@ -31,12 +31,12 @@ inline void setNZ(Registers *regs, uint8 val) {
 	regs->setStatus(FLAG_N, (val & 0x80) != 0);
 }
 
-/** Add with carry, honouring decimal mode. Shared by ADC, RRA. */
+/** Add with carry, honouring decimal mode where the chip has any. Shared by ADC, RRA. */
 inline void adcCore(Registers *regs, uint8 val) {
 	uint8 a = regs->a;
 	uint16 res = a + val + (regs->getStatus(FLAG_C) ? 1 : 0);
 	regs->setStatus(FLAG_Z, (res & 0xff) == 0);
-	if (regs->getStatus(FLAG_D)) {
+	if (!regs->decimalDisabled && regs->getStatus(FLAG_D)) {
 		if (((a & 0xF) + (val & 0xF) + (regs->getStatus(FLAG_C) ? 1 : 0)) > 9)
 			res += 6;
 		regs->setStatus(FLAG_N, res & 0x80);
@@ -53,14 +53,14 @@ inline void adcCore(Registers *regs, uint8 val) {
 	regs->a = res & 0xff;
 }
 
-/** Subtract with borrow, honouring decimal mode. Shared by SBC, ISC. */
+/** Subtract with borrow, honouring decimal mode where the chip has any. Shared by SBC, ISC. */
 inline void sbcCore(Registers *regs, uint8 val) {
 	uint8 a = regs->a;
 	uint16 res = a - val - (regs->getStatus(FLAG_C) ? 0 : 1);
 	regs->setStatus(FLAG_V, (((uint16) a ^ (uint16) val) & ((uint16) a ^ res)) & 0x80);
 	regs->setStatus(FLAG_N, (res & 0x80) != 0);
 	regs->setStatus(FLAG_Z, (res & 0xff) == 0);
-	if (regs->getStatus(FLAG_D)) {
+	if (!regs->decimalDisabled && regs->getStatus(FLAG_D)) {
 		if (((a & 0x0F) - (regs->getStatus(FLAG_C) ? 0 : 1)) < (val & 0x0F))
 			res -= 6;
 		if (res > 0x99) {
