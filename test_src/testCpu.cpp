@@ -32,10 +32,20 @@ namespace {
  */
 struct LoggingBus : Bus {
 	std::vector<std::pair<uint16, uint8> > writes;
+	/**
+	 * Every address read, in order.
+	 *
+	 * The dummy-read tests care about this for the same reason the RMW ones
+	 * care about the write sequence: the read a 6502 makes while it is still
+	 * adding an index goes to an address it will not use, so it leaves no trace
+	 * anywhere except here -- and on a device where reading has consequences.
+	 */
+	std::vector<uint16> reads;
 	int accesses = 0;
 
 	uint8 read(uint16 address) override {
 		accesses++;
+		reads.push_back(address);
 		return Bus::read(address);
 	}
 
@@ -493,6 +503,10 @@ TEST_CASE("no_instruction_makes_more_accesses_than_it_has_cycles") {
 	// of the instruction, which only works while accesses are the smaller
 	// number. An addressing mode that re-fetched a pointer it had already
 	// resolved would break it, and did.
+	//
+	// The gap is closing rather than growing: an indexed mode now drives the
+	// bus during the cycle it spends adding the index, because that is what the
+	// chip does with it.
 	for (int op = 0; op < 256; op++) {
 		CAPTURE(op);
 		Rig r;
@@ -504,6 +518,47 @@ TEST_CASE("no_instruction_makes_more_accesses_than_it_has_cycles") {
 
 		const int cycles = r.stepCycles();
 		CHECK_LE(r.bus.accesses, cycles);
+	}
+}
+
+TEST_CASE("indexed_addressing_reads_before_it_knows_the_address") {
+	// The cycle spent adding an index is a read, of the address with the carry
+	// into the high byte not yet applied. Invisible against RAM, and the whole
+	// point against a register where reading does something.
+	SUBCASE("a read makes it only when the index carries") {
+		Rig r;
+		r.regs.x = 0x01;
+		r.poke(0x0400, { 0xBD, 0xFF, 0x02 });   // LDA $02FF,X -> $0300, crossed
+		r.cpu.step();
+		// $02FF + 1 = $0300, but the chip drives $0200 first.
+		CHECK_EQ(r.bus.reads.size(), 5u);       // opcode, lo, hi, dummy, real
+		CHECK_EQ(r.bus.reads[3], 0x0200);
+		CHECK_EQ(r.bus.reads[4], 0x0300);
+
+		Rig plain;
+		plain.regs.x = 0x01;
+		plain.poke(0x0400, { 0xBD, 0x00, 0x02 });  // LDA $0200,X -> $0201
+		plain.cpu.step();
+		CHECK_EQ(plain.bus.reads.size(), 4u);   // no carry, no extra read
+	}
+	SUBCASE("a store makes it every time") {
+		// STA $0200,X does not cross a page and still spends the cycle, which
+		// is why it costs five rather than four.
+		Rig r;
+		r.regs.x = 0x01;
+		r.poke(0x0400, { 0x9D, 0x00, 0x02 });   // STA $0200,X
+		CHECK_EQ(r.stepCycles(), 5);
+		CHECK_EQ(r.bus.reads.size(), 4u);       // opcode, lo, hi, dummy
+		CHECK_EQ(r.bus.reads[3], 0x0201);
+	}
+	SUBCASE("a read-modify-write makes it before its own read") {
+		Rig r;
+		r.regs.x = 0x01;
+		r.poke(0x0400, { 0x1E, 0x00, 0x02 });   // ASL $0200,X
+		CHECK_EQ(r.stepCycles(), 7);
+		// opcode, lo, hi, dummy, real -- then the two writes an RMW makes.
+		CHECK_EQ(r.bus.reads.size(), 5u);
+		CHECK_EQ(r.bus.writes.size(), 2u);
 	}
 }
 

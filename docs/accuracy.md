@@ -96,6 +96,24 @@ once. `Processor` tracks the delay itself rather than shadowing the flag, so a d
 writing `I` directly is still obeyed on the spot. Verified against blargg's
 `cpu_interrupts_v2/1-cli_latency`.
 
+### Dummy reads
+
+A 6502 has no idle cycles. It drives the bus on every one of them, so the cycle an
+indexed mode spends adding the index is a real read of a real address — usually the one
+with the carry into the high byte not yet applied. Nothing notices against RAM; against
+`$2007` or `$4015`, where reading has consequences, it is the difference between a game
+working and not.
+
+The core makes those reads now: a read makes one when the index carries into a new page,
+while a store or a read-modify-write makes one every time, which is why `STA abs,X`
+costs five cycles whether or not it crosses a page. Zero-page indexed modes read the
+un-indexed address, which is what their adding cycle really does. Verified against
+blargg's `instr_misc/03-dummy_reads`.
+
+What is still missing is the same read on the `SHx` family (`$9C`, `$9E`, `$93`, `$9F`,
+`$9B`), whose behaviour on a page cross is unstable on real silicon and not modelled
+here at all.
+
 **Not done**, and all needing a poll *within* an instruction rather than between them:
 
 - **BRK hijacking.** An NMI asserted during a `BRK` sequence takes over the vector while

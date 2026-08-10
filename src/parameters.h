@@ -40,8 +40,26 @@
  */
 struct ParamsBase {
 	bool m_crossed;
-	ParamsBase() : m_crossed(false) { }
+	bool m_dummyDone;
+	ParamsBase() : m_crossed(false), m_dummyDone(false) { }
 	int extraCycles() const { return m_crossed ? 1 : 0; }
+
+	/**
+	 * Perform the read the chip makes before its address is finished.
+	 *
+	 * A 6502 has no idle cycles: it drives the bus on every one of them, so
+	 * the cycle an indexed mode spends adding the index is a real read, of a
+	 * real address, that is often the wrong one. Nothing notices in RAM. It is
+	 * extremely visible on $2007 or $4015, where reading has consequences, and
+	 * that is what blargg's dummy-read ROMs are about.
+	 *
+	 * A no-op for the modes that have no such cycle; the indexed ones shadow
+	 * it. Callers ask for it because whether it happens is a property of the
+	 * instruction, not of the address: a read only makes it when the index
+	 * carries into the high byte, while a write or a read-modify-write makes
+	 * it every time.
+	 */
+	void dummyRead(Registers* regs, Bus* bus) { (void)regs; (void)bus; }
 };
 
 struct NullParams : ParamsBase {
@@ -118,7 +136,16 @@ struct ZeroPageXParams : ParamsBase {
 	void init(Registers* regs, Bus* bus) {
 		data = bus->read(regs->pc++);
 	}
+	/** Reading the un-indexed address is what the adding cycle really does. */
+	void dummyRead(Registers* regs, Bus* bus) {
+		(void)regs;
+		if (m_dummyDone)
+			return;
+		m_dummyDone = true;
+		bus->read(PG2ABS(0, data));
+	}
 	uint8 get8bit(Registers* regs, Bus* bus) {
+		dummyRead(regs, bus);
 		uint8 ad =data + regs->x;
 		return bus->read(PG2ABS(0, ad));
 	}
@@ -142,7 +169,16 @@ struct ZeroPageYParams : ParamsBase {
 	void init(Registers* regs, Bus* bus) {
 		data = bus->read(regs->pc++);
 	}
+	/** Reading the un-indexed address is what the adding cycle really does. */
+	void dummyRead(Registers* regs, Bus* bus) {
+		(void)regs;
+		if (m_dummyDone)
+			return;
+		m_dummyDone = true;
+		bus->read(PG2ABS(0, data));
+	}
 	uint8 get8bit(Registers* regs, Bus* bus) {
+		dummyRead(regs, bus);
 		uint8 ad = data + regs->y;
 		return bus->read(PG2ABS(0, ad));
 	}
@@ -232,8 +268,20 @@ struct AbsoluteXParams : ParamsBase {
 		m_crossed = (ad & 0xff00) != (data & 0xff00);
 		return ad;
 	}
+	/** The address driven before the carry into the high byte is applied. */
+	void dummyRead(Registers* regs, Bus* bus) {
+		if (m_dummyDone)
+			return;
+		m_dummyDone = true;
+		bus->read((uint16)((data & 0xff00) | ((data + regs->x) & 0x00ff)));
+	}
 	uint8 get8bit(Registers* regs, Bus* bus) {
-		return bus->read(addr(regs, bus));
+		const uint16 ad = addr(regs, bus);
+		// A read only spends that cycle when the index carried; without a
+		// carry the address was right the first time.
+		if (m_crossed)
+			dummyRead(regs, bus);
+		return bus->read(ad);
 	}
 	uint16 get16bit(Registers* regs, Bus* bus) {
 		uint16 ad = addr(regs, bus);
@@ -263,8 +311,20 @@ struct AbsoluteYParams : ParamsBase {
 		m_crossed = (ad & 0xff00) != (data & 0xff00);
 		return ad;
 	}
+	/** The address driven before the carry into the high byte is applied. */
+	void dummyRead(Registers* regs, Bus* bus) {
+		if (m_dummyDone)
+			return;
+		m_dummyDone = true;
+		bus->read((uint16)((data & 0xff00) | ((data + regs->y) & 0x00ff)));
+	}
 	uint8 get8bit(Registers* regs, Bus* bus) {
-		return bus->read(addr(regs, bus));
+		const uint16 ad = addr(regs, bus);
+		// A read only spends that cycle when the index carried; without a
+		// carry the address was right the first time.
+		if (m_crossed)
+			dummyRead(regs, bus);
+		return bus->read(ad);
 	}
 	uint16 get16bit(Registers* regs, Bus* bus) {
 		uint16 ad = addr(regs, bus);
@@ -382,8 +442,18 @@ struct IndirectYParams : ParamsBase {
 		m_crossed = (ad & 0xff00) != (ptr & 0xff00);
 		return ad;
 	}
+	void dummyRead(Registers* regs, Bus* bus) {
+		if (m_dummyDone)
+			return;
+		m_dummyDone = true;
+		const uint16 ptr = base(regs, bus);
+		bus->read((uint16)((ptr & 0xff00) | ((ptr + regs->y) & 0x00ff)));
+	}
 	uint8 get8bit(Registers* regs, Bus* bus) {
-		return bus->read(addr(regs, bus));
+		const uint16 ad = addr(regs, bus);
+		if (m_crossed)
+			dummyRead(regs, bus);
+		return bus->read(ad);
 	}
 	uint16 get16bit(Registers* regs, Bus* bus) {
 		uint16 ad = addr(regs, bus);
