@@ -46,6 +46,24 @@ struct Registers {
 	      sp;  //!< Stack pointer; the stack lives at $0100 + sp and wraps in page 1
 	uint16 pc; //!< Program counter
 
+	/**
+	 * Whether this chip has had its decimal circuitry left off the die.
+	 *
+	 * Not a register: it is how the chip was wired, and it lives here only
+	 * because a Registers pointer is what every instruction is already handed.
+	 * The NMOS 6502 does binary-coded decimal; the 2A03 in a NES is the same
+	 * core without it, so `SED` there sets a bit that changes nothing about the
+	 * arithmetic. Games do set it, which is why the difference is visible
+	 * rather than academic.
+	 *
+	 * Phrased as a disable, rather than the more natural `decimalMode = true`,
+	 * so that a zeroed struct is a stock 6502. Several places reset a Registers
+	 * by memset, and a flag whose safe state was 1 turned every one of them
+	 * into a silent 2A03 -- which is how the first version of this broke Klaus
+	 * Dormann's decimal tests.
+	 */
+	bool decimalDisabled = false;
+
 	/** Set or clear one or more Flags6502 bits. */
 	void setStatus(int flag, bool v) {
 		if (v)

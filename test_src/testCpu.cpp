@@ -330,6 +330,62 @@ TEST_CASE("reset_disables_interrupts") {
 }
 
 /* ----------------------------------------------------------------------- */
+/* Decimal mode, and the chips that do not have it                           */
+/* ----------------------------------------------------------------------- */
+
+TEST_CASE("decimal_mode_adds_in_bcd") {
+	Rig r;
+	r.regs.a = 0x09;
+	r.regs.setStatus(FLAG_D, true);
+	r.poke(0x0400, { 0x69, 0x01 });        // ADC #$01
+	r.cpu.step();
+	// Nine plus one is ten, and in BCD ten is written $10.
+	CHECK_EQ(r.regs.a, 0x10);
+}
+
+TEST_CASE("a_chip_without_decimal_ignores_the_flag") {
+	// The 2A03 in a NES is this core with the decimal circuitry left off the
+	// die. The flag still exists, games still set it, and the arithmetic is
+	// binary regardless -- so nine plus one is $0A, not $10.
+	Rig r;
+	r.regs.decimalDisabled = true;
+	r.regs.a = 0x09;
+	r.regs.setStatus(FLAG_D, true);
+	r.poke(0x0400, { 0x69, 0x01 });
+	r.cpu.step();
+	CHECK_EQ(r.regs.a, 0x0A);
+}
+
+TEST_CASE("decimal_subtraction_follows_the_same_switch") {
+	Rig r;
+	r.regs.a = 0x10;
+	r.regs.setStatus(FLAG_D, true);
+	r.regs.setStatus(FLAG_C, true);        // no borrow
+	r.poke(0x0400, { 0xE9, 0x01 });        // SBC #$01
+	r.cpu.step();
+	CHECK_EQ(r.regs.a, 0x09);              // ten minus one, in BCD
+
+	Rig plain;
+	plain.regs.decimalDisabled = true;
+	plain.regs.a = 0x10;
+	plain.regs.setStatus(FLAG_D, true);
+	plain.regs.setStatus(FLAG_C, true);
+	plain.poke(0x0400, { 0xE9, 0x01 });
+	plain.cpu.step();
+	CHECK_EQ(plain.regs.a, 0x0F);          // binary, whatever D says
+}
+
+TEST_CASE("the_flag_itself_is_untouched_either_way") {
+	// SED and CLD still work on a 2A03; it is only the arithmetic that ignores
+	// what they set, and a game reading P back must see what it wrote.
+	Rig r;
+	r.regs.decimalDisabled = true;
+	r.poke(0x0400, { 0xF8 });              // SED
+	r.cpu.step();
+	CHECK(r.regs.getStatus(FLAG_D));
+}
+
+/* ----------------------------------------------------------------------- */
 /* Memory                                                                    */
 /* ----------------------------------------------------------------------- */
 
